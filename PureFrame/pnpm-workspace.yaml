@@ -1,0 +1,16 @@
+packages:
+  - "packages/core"
+  - "packages/schema"
+  - "packages/utils"
+  - "packages/geometry"             # SVG path math for Node.js
+  - "packages/visuals"              # Visual system - fills, effects, patterns
+  - "packages/audio"                # Audio system - clips, tracks, mixing
+  - "packages/captions"             # Caption system
+  - "packages/player"               # Embeddable player for preview
+  - "packages/components"           # Pre-built components and transitions
+  - "packages/editor-core"          # Headless editor logic
+  # - "packages/render"             # Disabled - CLI has built-in renderer
+  - "packages/media"
+  # - "packages/remotion-importer"  # Temporarily disabled - missing files
+  - "packages/insights"              # PureFrame Insights - MCP codebase analyzer
+  - "apps/*"

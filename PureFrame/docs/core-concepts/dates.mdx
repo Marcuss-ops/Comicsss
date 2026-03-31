@@ -1,0 +1,295 @@
+---
+title: Dates
+---
+
+# Dates
+
+In PureFrame, dates are just numbers too.
+
+A timestamp is a number.
+A date component (year, month, day) is a number.
+A duration is a number.
+A countdown is a number.
+
+The same principle applies:
+
+**frame in, numbers out, draw calls next**
+
+PureFrame does not use Date objects or moment-style APIs during rendering.
+Instead, dates are resolved to explicit numeric values that can be used for position, opacity, rotation, or any Canvas property.
+
+## Why dates are numbers
+
+Dates in PureFrame are treated as frame-derived values because:
+
+- timestamps can be converted to frame numbers
+- date components can be animated frame-by-frame
+- countdowns are just decreasing numbers
+- calendars are grids of numbers
+- clocks are rotations based on time
+
+This keeps dates consistent with the PureFrame model:
+no hidden state, no browser-driven updates, just deterministic values for the current frame.
+
+## Common date patterns
+
+### Countdown
+
+A countdown resolves to a number that decreases over frames:
+
+```ts
+import { secondsToFrames } from "@pureframe/core";
+
+type CountdownArgs = {
+  frame: number;
+  fps: number;
+  targetTimestamp: number; // Unix timestamp in seconds
+  currentTimestamp: number; // Unix timestamp in seconds
+};
+
+export const resolveCountdown = ({
+  frame,
+  fps,
+  targetTimestamp,
+  currentTimestamp,
+}: CountdownArgs): number => {
+  const remainingSeconds = Math.max(0, targetTimestamp - currentTimestamp);
+  const remainingFrames = secondsToFrames(remainingSeconds, fps);
+  
+  // Returns 1 when target is reached, 0 when far away
+  return Math.min(1, frame / remainingFrames);
+};
+```
+
+### Clock hands
+
+Clock hands are rotations based on time components:
+
+```ts
+type ClockArgs = {
+  frame: number;
+  fps: number;
+  timestamp: number; // Unix timestamp
+};
+
+export const resolveClockHands = ({
+  frame,
+  fps,
+  timestamp,
+}: ClockArgs) => {
+  const date = new Date(timestamp * 1000);
+  
+  // Convert to angles (0-360 degrees)
+  const hours = (date.getHours() % 12) * 30 + date.getMinutes() * 0.5;
+  const minutes = date.getMinutes() * 6 + date.getSeconds() * 0.1;
+  const seconds = date.getSeconds() * 6;
+  
+  return { hours, minutes, seconds };
+};
+```
+
+### Calendar day animation
+
+Days in a calendar can be animated using springs:
+
+```ts
+import { spring } from "@pureframe/core";
+
+type DayAnimationArgs = {
+  frame: number;
+  fps: number;
+  dayIndex: number;
+  totalDays: number;
+  durationInFrames: number;
+};
+
+export const resolveDayOpacity = ({
+  frame,
+  fps,
+  dayIndex,
+  totalDays,
+  durationInFrames,
+}: DayAnimationArgs): number => {
+  const delay = (dayIndex / totalDays) * durationInFrames;
+  
+  return spring({
+    fps,
+    frame,
+    delay,
+    config: { damping: 150 },
+  });
+};
+```
+
+## Date formatting
+
+PureFrame uses deterministic formatting functions:
+
+```ts
+type FormatDateArgs = {
+  timestamp: number; // Unix timestamp
+  locale?: string;
+  format?: "short" | "long" | "numeric";
+};
+
+export const formatDate = ({
+  timestamp,
+  locale = "en-US",
+  format = "short",
+}: FormatDateArgs): string => {
+  const date = new Date(timestamp * 1000);
+  
+  const options: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: format === "long" ? "long" : "numeric",
+    day: "numeric",
+  };
+  
+  return new Intl.DateTimeFormat(locale, options).format(date);
+};
+```
+
+## Recommended approach
+
+For PureFrame, we recommend a **custom module** approach:
+
+### 1. Create `@pureframe/dates`
+
+A dedicated module that provides:
+
+- **Timestamp ↔ Frame conversion**
+  - Convert Unix timestamps to frame numbers
+  - Convert frame numbers back to timestamps
+  - Support for different timezones
+
+- **Date component extraction**
+  - Extract year, month, day, hour, minute, second from timestamps
+  - All values as numbers for animation
+
+- **Deterministic formatting**
+  - Pure functions for formatting dates
+  - No side effects or locale mutations
+  - Support for multiple locales
+
+- **Animation primitives**
+  - Countdown animations
+  - Clock hand rotations
+  - Calendar transitions
+  - Date range progress
+
+### 2. Use `date-fns` for complex operations
+
+For operations that require complex date math:
+
+```ts
+import { addDays, differenceInDays, startOfMonth } from "date-fns";
+
+type DateRangeArgs = {
+  startTimestamp: number;
+  endTimestamp: number;
+};
+
+export const getDateRange = ({
+  startTimestamp,
+  endTimestamp,
+}: DateRangeArgs) => {
+  const start = new Date(startTimestamp * 1000);
+  const end = new Date(endTimestamp * 1000);
+  
+  return {
+    days: differenceInDays(end, start),
+    months: differenceInMonths(end, start),
+    startOfMonth: startOfMonth(start),
+  };
+};
+```
+
+`date-fns` is recommended because:
+
+- Pure functions (no mutations)
+- Tree-shakeable (only import what you need)
+- Lightweight (~20kb for full library)
+- TypeScript support
+- No global state
+
+### 3. Use `Intl.DateTimeFormat` for display
+
+For rendering dates to Canvas:
+
+```ts
+export const drawDate = ({
+  ctx,
+  timestamp,
+  x,
+  y,
+  fontSize = 24,
+}: {
+  ctx: CanvasRenderingContext2D;
+  timestamp: number;
+  x: number;
+  y: number;
+  fontSize?: number;
+}) => {
+  const formatted = formatDate({ timestamp, format: "long" });
+  
+  ctx.font = `${fontSize}px Arial`;
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(formatted, x, y);
+};
+```
+
+## Integration with existing utilities
+
+The new date module would extend existing PureFrame utilities:
+
+```ts
+// core/src/time/index.ts (existing)
+export function secondsToFrames(seconds: number, fps: number): number {
+  return Math.round(seconds * fps);
+}
+
+// dates/src/index.ts (new)
+export function timestampToFrame(
+  timestamp: number,
+  startTimestamp: number,
+  fps: number
+): number {
+  const elapsedSeconds = timestamp - startTimestamp;
+  return secondsToFrames(elapsedSeconds, fps);
+}
+
+export function frameToTimestamp(
+  frame: number,
+  startTimestamp: number,
+  fps: number
+): number {
+  const elapsedSeconds = frame / fps;
+  return startTimestamp + elapsedSeconds;
+}
+```
+
+## Mental model for dates
+
+The same mental model applies:
+
+1. resolve date numbers from the current frame
+2. combine date numbers into final values
+3. pass those values into Canvas rendering
+
+A date resolver should produce numbers.
+A date formatter should produce strings.
+A date animator should describe how date values evolve across frames.
+
+## Summary
+
+| Approach | Use case | Package |
+|----------|----------|---------|
+| Custom module | Core date operations, frame conversion | `@pureframe/dates` |
+| date-fns | Complex date math, calculations | `date-fns` |
+| Intl API | Formatting, localization | Built-in |
+| Canvas API | Rendering dates to screen | Built-in |
+
+This keeps PureFrame consistent:
+deterministic, composable, and Canvas-native.

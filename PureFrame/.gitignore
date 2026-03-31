@@ -1,0 +1,71 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Frames cache
+.frames/
+*.png
+
+# Output videos
+output/
+*.mp4
+*.webm
+*.gif
+*.mov
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Test coverage
+coverage/
+
+# Temp files
+*.tmp
+*.temp
+
+# Temp directories (build artifacts)
+_tmp_*/
+.tmp-*/
+.render-temp/
+*.tmp.cjs
+*.tmp.cjs.map
+
+# Server PID file
+.server.pid
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Frames directory
+frames/
+
+# Legacy/old code
+oldremotion/
+
+# Sandbox / sperimentale (non monorepo)
+remotiondev/
+
+# Accidental directories
+-p*/
+
+# HTML test files
+*.html
+!.github/**/*.html

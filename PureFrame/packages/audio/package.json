@@ -1,0 +1,30 @@
+{
+  "name": "@pureframe/audio",
+  "version": "0.1.0",
+  "description": "Audio system for PureFrame - clips, tracks, mixing, automation",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "node -e \"const fs=require('fs');const d='dist';if(fs.existsSync(d)){fs.rmSync(d,{recursive:true,force:true});}\""
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0"
+  },
+  "keywords": [
+    "pureframe",
+    "audio",
+    "video",
+    "sound"
+  ],
+  "license": "MIT"
+}

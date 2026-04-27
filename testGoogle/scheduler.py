@@ -9,20 +9,17 @@ scheduler = AsyncIOScheduler()
 
 
 async def _sync_all():
-    from drive_client import list_vids_projects, list_exported_files, download_file
+    from playwright_client import list_projects, download_video
 
     log.info("Scheduled sync started at %s", datetime.now().isoformat())
-    projects = list_vids_projects()
+    projects = await list_projects()
     downloaded = 0
 
     for project in projects:
         try:
-            files = list_exported_files(project["id"])
-            for f in files:
-                file_type = "video" if "video" in f["mimeType"] else "image"
-                path = await download_file(f["id"], f["name"], file_type)
-                log.info("Downloaded: %s -> %s", f["name"], path)
-                downloaded += 1
+            path = await download_video(project["id"])
+            log.info("Downloaded: %s -> %s", project.get("name"), path)
+            downloaded += 1
         except Exception as e:
             log.error("Error syncing project %s: %s", project.get("name"), e)
 

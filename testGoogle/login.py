@@ -28,6 +28,10 @@ async def main():
         await page.goto("https://vids.google.com")
         await page.wait_for_load_state("networkidle", timeout=30_000)
 
+        # Also visit docs.google.com/videos to set cookies for that domain
+        await page.goto("https://docs.google.com/videos/")
+        await page.wait_for_load_state("networkidle", timeout=30_000)
+
         await context.storage_state(path=str(session_path))
         await browser.close()
 

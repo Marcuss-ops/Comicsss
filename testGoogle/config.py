@@ -16,4 +16,5 @@ DRIVE_SCOPES = [
 ]
 
 VIDS_MIME_TYPE = "application/vnd.google-apps.vids"
-GOOGLE_VIDS_URL = "https://vids.google.com"
+GOOGLE_VIDS_BASE_URL = "https://docs.google.com/videos/d"
+GOOGLE_VIDS_HOME_URL = "https://vids.google.com"

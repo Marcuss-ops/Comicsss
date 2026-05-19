@@ -1,8 +1,9 @@
 import logging
+import os
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from config import SCHEDULE_CRON
+from config import SCHEDULE_CRON, SESSIONS_DIR
 
 log = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
@@ -12,18 +13,37 @@ async def _sync_all():
     from playwright_client import list_projects, download_video
 
     log.info("Scheduled sync started at %s", datetime.now().isoformat())
-    projects = await list_projects()
-    downloaded = 0
+    
+    if not SESSIONS_DIR.exists():
+        log.warning("No sessions directory found. Skipping sync.")
+        return
 
-    for project in projects:
+    session_files = list(SESSIONS_DIR.glob("*.json"))
+    if not session_files:
+        log.warning("No session files found. Skipping sync.")
+        return
+
+    for session_file in session_files:
+        account = session_file.stem
+        log.info("Syncing account: %s", account)
+        
         try:
-            path = await download_video(project["id"])
-            log.info("Downloaded: %s -> %s", project.get("name"), path)
-            downloaded += 1
-        except Exception as e:
-            log.error("Error syncing project %s: %s", project.get("name"), e)
+            projects = await list_projects(account=account)
+            downloaded = 0
 
-    log.info("Scheduled sync complete. Downloaded %d files.", downloaded)
+            for project in projects:
+                try:
+                    path = await download_video(project["id"], account=account)
+                    log.info("[%s] Downloaded: %s -> %s", account, project.get("name"), path)
+                    downloaded += 1
+                except Exception as e:
+                    log.error("[%s] Error syncing project %s: %s", account, project.get("name"), e)
+
+            log.info("[%s] Sync complete. Downloaded %d files.", account, downloaded)
+        except Exception as e:
+            log.error("Failed to sync account %s: %s", account, e)
+
+    log.info("Global scheduled sync complete.")
 
 
 def start(custom_cron: str | None = None):

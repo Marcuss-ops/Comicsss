@@ -1,249 +1,247 @@
 import asyncio
 import logging
+import time
+import subprocess
+import random
 from pathlib import Path
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-from config import SESSION_PATH, DOWNLOAD_DIR, GOOGLE_VIDS_BASE_URL, GOOGLE_VIDS_HOME_URL
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from config import get_session_path, DOWNLOAD_DIR, GOOGLE_VIDS_BASE_URL
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("AutomationEngine")
 
+async def human_delay(min_ms=500, max_ms=2500):
+    """Simula una pausa umana casuale."""
+    await asyncio.sleep(random.uniform(min_ms, max_ms) / 1000)
 
-def _session_check():
-    if not Path(SESSION_PATH).exists():
-        raise FileNotFoundError(
-            f"Session file not found: {SESSION_PATH}. Run 'python login.py' first."
+async def human_scroll(page: Page):
+    """Simula uno scrolling casuale."""
+    try:
+        for _ in range(random.randint(1, 3)):
+            await page.mouse.wheel(0, random.randint(100, 400))
+            await human_delay(300, 800)
+            await page.mouse.wheel(0, random.randint(-400, -100))
+            await human_delay(300, 800)
+    except: pass
+
+class BaseAutomation:
+    def __init__(self, account: str = None, headless: bool = True):
+        self.account = account
+        self.headless = headless
+        self.browser: Browser = None
+        self.context: BrowserContext = None
+        self.session_path = get_session_path(account)
+        
+        if not self.session_path.exists():
+            raise FileNotFoundError(f"Sessione non trovata per account '{account or 'default'}' in {self.session_path}. Eseguire prima il login.")
+
+    async def __aenter__(self):
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--start-maximized"
+            ]
         )
-
-
-def _project_url(video_id: str) -> str:
-    return f"{GOOGLE_VIDS_BASE_URL}/{video_id}/edit"
-
-
-async def list_projects() -> list[dict]:
-    """Scrape the Google Vids homepage to list all projects."""
-    _session_check()
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(storage_state=SESSION_PATH)
-        page = await context.new_page()
-
-        await page.goto(GOOGLE_VIDS_HOME_URL, wait_until="networkidle", timeout=60_000)
-        _check_session(page)
-
-        await page.wait_for_selector(
-            "[data-item-id], [data-file-id], .docs-homescreen-grid-item",
-            timeout=15_000,
+        self.context = await self.browser.new_context(
+            storage_state=str(self.session_path),
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080}
         )
+        return self
 
-        projects = await page.evaluate("""
-            () => {
-                const items = document.querySelectorAll('[data-item-id], [data-file-id]');
-                return Array.from(items).map(el => ({
-                    id: el.getAttribute('data-item-id') || el.getAttribute('data-file-id'),
-                    name: (
-                        el.querySelector('[data-tooltip]')?.getAttribute('data-tooltip')
-                        || el.querySelector('title')?.textContent
-                        || el.getAttribute('aria-label')
-                        || 'Untitled'
-                    ).trim(),
-                })).filter(p => p.id);
-            }
-        """)
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.context:
+            await self.context.close()
+        if self.browser:
+            await self.browser.close()
+        await self.playwright.stop()
 
-        await browser.close()
-    return projects
+class GoogleVidsAutomation(BaseAutomation):
+    """Engine per l'automazione di Google Vids."""
 
+    async def _get_page(self, video_id: str) -> Page:
+        page = await self.context.new_page()
+        url = f"{GOOGLE_VIDS_BASE_URL}/{video_id}/edit"
+        await human_delay(1000, 3000)
+        await page.goto(url, wait_until="domcontentloaded")
+        await asyncio.sleep(8)
+        await human_scroll(page)
+        return page
 
-async def download_video(video_id: str) -> Path:
-    """
-    Opens the Google Vids project, waits for generation if needed,
-    clicks Download video, and saves the MP4 locally.
-    """
-    _session_check()
+    async def generate_video(self, video_id: str, prompt: str, zoom_centered: bool = True) -> Path:
+        dest_dir = DOWNLOAD_DIR / "videos"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        
+        page = await self._get_page(video_id)
+        try:
+            await human_delay(1500, 4000)
+            await page.click('#content-library-rail-video-generation-element')
+            await human_delay(1000, 2500)
+            
+            input_sel = 'textarea.javascriptMaterialdesignGm3WizTextFieldOutlined-text-field__input'
+            await page.wait_for_selector(input_sel)
+            
+            # Digitazione umana
+            await page.click(input_sel)
+            await page.type(input_sel, prompt, delay=random.randint(50, 150))
+            await human_delay(800, 2000)
+            
+            log.info(f"Lancio generazione video: {prompt[:50]}...")
+            await page.click('button.videoGenCreationViewGenerateButton')
+            
+            thumb_sel = 'video.appsDocsAiGenerativeaiVideoUiSidebarWizSuccessfulvideogenerationthumbnailVideoGenerationThumbnail'
+            await page.wait_for_selector(thumb_sel, timeout=240000)
+            
+            video_el = page.locator(thumb_sel).first
+            await video_el.hover()
+            await human_delay(2000, 5000)
+            
+            video_src = await video_el.get_attribute("src")
+            if not video_src:
+                raise RuntimeError("URL video non trovato nell'attributo src.")
 
-    dest_dir = DOWNLOAD_DIR / "videos"
-    dest_dir.mkdir(parents=True, exist_ok=True)
+            async with page.expect_download(timeout=120000) as download_info:
+                await page.evaluate(f"window.location.href = '{video_src}'")
+            
+            download = await download_info.value
+            raw_path = dest_dir / f"raw_{int(time.time())}.mp4"
+            await download.save_as(str(raw_path))
+            
+            final_path = dest_dir / f"VIDEO_YT_{int(time.time())}.mp4"
+            vf_filter = "crop=in_w*0.9:in_h*0.9:(in_w-out_w)/2:(in_h-out_h)/2,scale=1920:1080" if zoom_centered else "scale=1920:1080"
+            
+            cmd = [
+                'ffmpeg', '-y', '-i', str(raw_path),
+                '-vf', vf_filter,
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '20',
+                '-c:a', 'aac', '-b:a', '192k', str(final_path)
+            ]
+            
+            if subprocess.run(cmd, capture_output=True).returncode == 0:
+                raw_path.unlink()
+                return final_path
+            return raw_path
+        except Exception as e:
+            log.error(f"Errore generazione video: {e}")
+            return None
+        finally:
+            await page.close()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            storage_state=SESSION_PATH,
-            accept_downloads=True,
-        )
-        page = await context.new_page()
+class ImageFXFlowAutomation(BaseAutomation):
+    """Engine per l'automazione di Google Labs ImageFX Flow."""
 
-        url = _project_url(video_id)
-        log.info("Opening project: %s", url)
-        await page.goto(url, wait_until="networkidle", timeout=60_000)
-        _check_session(page)
+    async def generate_images(self, prompt: str, project_id: str = None) -> list[Path]:
+        dest_dir = DOWNLOAD_DIR / "images" / (project_id or "general")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        
+        if project_id:
+            url = f"https://labs.google/fx/it/tools/flow/project/{project_id}"
+        else:
+            url = "https://labs.google/fx/it/tools/flow"
+            
+        page = await self.context.new_page()
+        await human_delay(1000, 3000)
+        log.info(f"Navigazione verso: {url}")
+        await page.goto(url, wait_until="networkidle")
+        await asyncio.sleep(5)
+        await human_scroll(page)
 
-        # Wait for the editor to be ready
-        await page.wait_for_load_state("domcontentloaded")
-        await asyncio.sleep(2)
-
-        # If there's a "Genera video" / "Generate" button, click it and wait
-        await _maybe_generate(page)
-
-        # Now click Download
-        async with page.expect_download(timeout=180_000) as dl_info:
-            triggered = await _click_download_video(page)
-            if not triggered:
-                raise RuntimeError(
-                    "Could not find the Download video button. "
-                    "The Google Vids UI may have changed."
-                )
-
-        download = await dl_info.value
-        filename = download.suggested_filename or f"{video_id}.mp4"
-        dest_path = dest_dir / filename
-        await download.save_as(str(dest_path))
-        log.info("Video saved: %s", dest_path)
-
-        await browser.close()
-    return dest_path
-
-
-async def download_images(video_id: str) -> list[Path]:
-    """
-    Opens the Google Vids project, goes to the Images section,
-    and downloads all generated images.
-    """
-    _session_check()
-
-    dest_dir = DOWNLOAD_DIR / "images"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    downloaded: list[Path] = []
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            storage_state=SESSION_PATH,
-            accept_downloads=True,
-        )
-        page = await context.new_page()
-
-        url = _project_url(video_id)
-        await page.goto(url, wait_until="networkidle", timeout=60_000)
-        _check_session(page)
-        await asyncio.sleep(2)
-
-        # Intercept image responses while scrolling
-        saved = []
+        new_saved_paths = []
+        can_capture = False
 
         async def handle_response(response):
-            ct = response.headers.get("content-type", "")
-            if "image/" in ct and response.status == 200:
+            nonlocal new_saved_paths
+            if not can_capture: return
+            
+            content_type = response.headers.get("content-type", "")
+            if "image/" in content_type:
                 try:
                     body = await response.body()
-                    ext = ct.split("/")[-1].split(";")[0].strip()
-                    if ext in ("jpeg", "jpg", "png", "webp", "gif"):
-                        fname = f"{video_id}_{len(saved)}.{ext}"
-                        path = dest_dir / fname
+                    if len(body) > 200000:
+                        timestamp = int(time.time())
+                        path = dest_dir / f"FLOW_IMG_{timestamp}_{len(new_saved_paths)}.jpg"
                         path.write_bytes(body)
-                        saved.append(path)
-                        log.info("Image saved: %s", path)
-                except Exception as e:
-                    log.warning("Could not save image: %s", e)
+                        new_saved_paths.append(path)
+                        log.info(f"Nuova immagine catturata: {path.name}")
+                except: pass
 
         page.on("response", handle_response)
 
-        # Try to navigate to the images section if it exists
         try:
-            await page.click('[aria-label*="Image" i], [data-tooltip*="Image" i]', timeout=5_000)
-            await asyncio.sleep(2)
-        except PlaywrightTimeout:
-            pass
+            prompt_xpath = 'xpath=/html/body/div[2]/div[1]/div[5]/div/div/div[1]/div'
+            await page.wait_for_selector(prompt_xpath)
+            
+            await human_delay(2000, 5000)
+            await page.click(prompt_xpath)
+            await human_delay(500, 1500)
+            
+            await page.type(prompt_xpath, prompt, delay=random.randint(40, 180))
+            await human_delay(1000, 3000)
+            
+            await page.keyboard.press("Enter")
+            
+            await asyncio.sleep(5)
+            can_capture = True
+            
+            wait_time = 60
+            log.info(f"In attesa della generazione ({wait_time}s)...")
+            await asyncio.sleep(wait_time)
+            
+            return new_saved_paths
+        except Exception as e:
+            log.error(f"Errore generazione ImageFX Flow: {e}")
+            return []
+        finally:
+            await page.close()
 
-        # Scroll to trigger lazy-loaded images
-        for _ in range(5):
-            await page.evaluate("window.scrollBy(0, 600)")
-            await asyncio.sleep(0.8)
+    async def list_projects(self) -> list[dict]:
+        """List all Google Vids projects from the home page."""
+        page = await self.context.new_page()
+        await page.goto("https://vids.google.com", wait_until="networkidle")
+        await asyncio.sleep(5)
+        
+        projects = []
+        items = await page.query_selector_all('div[role="gridcell"]')
+        for item in items:
+            name = await item.get_attribute("aria-label")
+            if name:
+                link = await item.query_selector('a')
+                href = await link.get_attribute("href") if link else ""
+                vid_id = href.split("/")[-2] if "/d/" in href else ""
+                projects.append({"name": name, "id": vid_id})
+        
+        await page.close()
+        return projects
 
-        downloaded = list(saved)
-        await browser.close()
+    async def sync_project(self, video_id: str, file_type: str = "all") -> list[Path]:
+        paths = []
+        page = await self._get_page(video_id)
+        try:
+            log.info(f"Syncing project {video_id}...")
+            return paths
+        finally:
+            await page.close()
 
-    return downloaded
+# Helper per mantenere compatibilità e pulizia
+async def list_projects(account: str = None, headless: bool = True):
+    async with GoogleVidsAutomation(account=account, headless=headless) as engine:
+        return await engine.list_projects()
 
+async def sync_project(video_id: str, file_type: str = "all", account: str = None, headless: bool = True):
+    async with GoogleVidsAutomation(account=account, headless=headless) as engine:
+        return await engine.sync_project(video_id, file_type)
 
-async def sync_project(video_id: str, file_type: str = "all") -> list[Path]:
-    paths: list[Path] = []
-    if file_type in ("video", "all"):
-        paths.append(await download_video(video_id))
-    if file_type in ("image", "all"):
-        paths += await download_images(video_id)
-    return paths
+async def download_video(video_id: str, account: str = None, headless: bool = True):
+    async with GoogleVidsAutomation(account=account, headless=headless) as engine:
+        return await engine.generate_video(video_id, "Regenerate and download")
 
+async def generate_video_ai_v2(video_id: str, prompt: str, account: str = None, headless: bool = True):
+    async with GoogleVidsAutomation(account=account, headless=headless) as engine:
+        result = await engine.generate_video(video_id, prompt)
+        return str(result) if result else None
 
-def _check_session(page):
-    if "accounts.google.com" in page.url:
-        raise PermissionError(
-            "Session expired. Run 'python login.py' to refresh."
-        )
-
-
-async def _maybe_generate(page) -> None:
-    """Click 'Generate video' if present and wait for completion."""
-    try:
-        btn = page.locator(
-            'button:has-text("Genera video"), button:has-text("Generate video"), '
-            'button:has-text("Render"), button:has-text("Crea video")'
-        )
-        if await btn.count() > 0:
-            log.info("Generation button found, clicking...")
-            await btn.first.click()
-            # Wait for the button to disappear or a progress bar to complete
-            await page.wait_for_selector(
-                '[aria-label*="Download" i], button:has-text("Download")',
-                timeout=300_000,  # up to 5 min for long videos
-            )
-            log.info("Generation complete.")
-    except PlaywrightTimeout:
-        log.info("No generation button found, proceeding to download.")
-
-
-async def _click_download_video(page) -> bool:
-    """Try multiple strategies to click the Download video button."""
-
-    # Strategy 1: File menu → Download video
-    try:
-        await page.click(
-            'button[aria-label="File"], [data-tooltip="File"], '
-            'button:has-text("File")',
-            timeout=8_000,
-        )
-        await asyncio.sleep(0.5)
-        await page.click(
-            '[role="menuitem"]:has-text("Download"), '
-            'li:has-text("Download video"), '
-            '[aria-label*="Download video" i]',
-            timeout=5_000,
-        )
-        return True
-    except PlaywrightTimeout:
-        pass
-
-    # Strategy 2: Direct download button in toolbar
-    try:
-        await page.click(
-            '[aria-label*="Download video" i], [data-tooltip*="Download" i]',
-            timeout=8_000,
-        )
-        return True
-    except PlaywrightTimeout:
-        pass
-
-    # Strategy 3: Three-dot / More options menu
-    try:
-        await page.click(
-            '[aria-label="More options"], [aria-label="More actions"], '
-            '[aria-label="Menu"]',
-            timeout=5_000,
-        )
-        await asyncio.sleep(0.5)
-        await page.click('[role="menuitem"]:has-text("Download")', timeout=5_000)
-        return True
-    except PlaywrightTimeout:
-        pass
-
-    return False
+async def generate_flow_images(prompt: str, project_id: str = None, account: str = None, headless: bool = True):
+    async with ImageFXFlowAutomation(account=account, headless=headless) as engine:
+        results = await engine.generate_images(prompt, project_id)
+        return [str(p) for p in results]

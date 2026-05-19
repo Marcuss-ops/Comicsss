@@ -128,12 +128,30 @@ class GoogleVidsAutomation(BaseAutomation):
         finally:
             await page.close()
 
+STYLE_MAP = {
+    "realistic": "extremely detailed, realistic, 8k, photorealistic, cinematic lighting",
+    "cartoon": "cartoon style, 2d, colorful, high quality animation, vibrant",
+    "medieval": "medieval style, fantasy, historical, detailed oil painting, epic atmosphere",
+    "cyberpunk": "cyberpunk aesthetic, neon lights, futuristic, dark atmosphere, high tech",
+    "watercolor": "watercolor painting style, soft colors, artistic, fluid textures",
+    "3d-render": "3d render, octane render, unreal engine 5 style, volumetric lighting, masterpiece",
+    "sketch": "hand-drawn sketch, pencil drawing, monochrome, detailed lines, artistic",
+    "cinematic": "cinematic lighting, movie shot, 35mm lens, highly detailed, dramatic",
+}
+
 class ImageFXFlowAutomation(BaseAutomation):
     """Engine per l'automazione di Google Labs ImageFX Flow."""
 
-    async def generate_images(self, prompt: str, project_id: str = None) -> list[Path]:
+    async def generate_images(self, prompt: str, project_id: str = None, style: str = None) -> list[Path]:
         dest_dir = DOWNLOAD_DIR / "images" / (project_id or "general")
         dest_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Applichiamo lo stile se presente
+        if style and style.lower() in STYLE_MAP:
+            full_prompt = f"{prompt}, {STYLE_MAP[style.lower()]}"
+            log.info(f"Stile '{style}' applicato al prompt.")
+        else:
+            full_prompt = prompt
         
         if project_id:
             url = f"https://labs.google/fx/it/tools/flow/project/{project_id}"
@@ -176,7 +194,7 @@ class ImageFXFlowAutomation(BaseAutomation):
             await page.click(prompt_xpath)
             await human_delay(500, 1500)
             
-            await page.type(prompt_xpath, prompt, delay=random.randint(40, 180))
+            await page.type(prompt_xpath, full_prompt, delay=random.randint(40, 180))
             await human_delay(1000, 3000)
             
             await page.keyboard.press("Enter")
@@ -241,7 +259,7 @@ async def generate_video_ai_v2(video_id: str, prompt: str, account: str = None, 
         result = await engine.generate_video(video_id, prompt)
         return str(result) if result else None
 
-async def generate_flow_images(prompt: str, project_id: str = None, account: str = None, headless: bool = True):
+async def generate_flow_images(prompt: str, project_id: str = None, style: str = None, account: str = None, headless: bool = True):
     async with ImageFXFlowAutomation(account=account, headless=headless) as engine:
-        results = await engine.generate_images(prompt, project_id)
+        results = await engine.generate_images(prompt, project_id, style)
         return [str(p) for p in results]

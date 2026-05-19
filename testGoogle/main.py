@@ -65,6 +65,7 @@ class GenerateRequest(BaseModel):
 class FlowImageRequest(BaseModel):
     prompt: str
     project_id: Optional[str] = None
+    style: Optional[str] = None
     headless: bool = True
     account: Optional[str] = None
 
@@ -114,7 +115,13 @@ async def generate_flow_images_endpoint(req: FlowImageRequest, background_tasks:
     async def _run():
         _jobs[job_id]["status"] = "running"
         try:
-            paths = await generate_flow_images(req.prompt, project_id=req.project_id, account=req.account, headless=req.headless)
+            paths = await generate_flow_images(
+                req.prompt, 
+                project_id=req.project_id, 
+                style=req.style, 
+                account=req.account, 
+                headless=req.headless
+            )
             if paths:
                 _jobs[job_id]["status"] = "done"
                 _jobs[job_id]["files"] = paths

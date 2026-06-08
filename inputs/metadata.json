@@ -1,0 +1,6 @@
+{
+  "name": "Comic & PDF Video Maker (Backend)",
+  "description": "Local extraction and analysis of comics using Python-based OCR and panel detection.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

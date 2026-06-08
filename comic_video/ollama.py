@@ -17,13 +17,14 @@ from typing import Any, Optional
 import requests
 
 from comic_video.utils import log
+from comic_video.config import OLLAMA_URL, OLLAMA_MODEL, OLLAMA_TIMEOUT_SECONDS
 
 # ---------------------------------------------------------------------------
 # Config defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = "gemma4:e4b"
+DEFAULT_OLLAMA_URL = OLLAMA_URL
+DEFAULT_MODEL = OLLAMA_MODEL
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +38,7 @@ def call_ollama(
     ollama_url: str = DEFAULT_OLLAMA_URL,
     temperature: float = 0.1,
     max_retries: int = 3,
-    timeout: int = 300,
+    timeout: int = OLLAMA_TIMEOUT_SECONDS,
 ) -> str:
     """
     Call Ollama generate API with optional images (base64).
@@ -222,6 +223,122 @@ Ecco le analisi delle pagine (leggile TUTTE prima di scrivere l'intro e la concl
 
 
 # ---------------------------------------------------------------------------
+# Response sanitization helpers
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate prompt leakage / placeholder text from the LLM
+# These are matched ANYWHERE in the text.
+_PROMPT_LEAKAGE_PATTERNS = [
+    r"Racconto \(4-6 frasi\)\.?\s*",
+    r"---\s*(TESTO ESTRATTO|COSA DEVI FARE|REGOLE|OUTPUT JSON)",
+    r"Produci SOLO il JSON",
+    r"Scrivi in ITALIANO",
+    r"NON INVENTARE personaggi",
+    r"Non usare:\s*atmosfera",
+    r"Includi i dialoghi nella narrazione",
+]
+
+_PLACEHOLDER_EXACT = {
+    "Racconto (4-6 frasi). Includi i dialoghi nella narrazione usando il TESTO OCR.": "",
+    "Titolo breve della scena": "",
+    "Personaggi visibili": "",
+    "IL TESTO OCR SOPRA (o vuoto se nessun balloon)": "",
+    "Onomatopea": "",
+}
+
+
+def _sanitize_llm_field(value: str, field_name: str = "") -> str:
+    """
+    Clean LLM response fields by removing prompt leakage and placeholder text.
+    
+    Returns the cleaned string, or an empty string if nothing usable remains.
+    """
+    if not isinstance(value, str):
+        return ""
+    
+    cleaned = value.strip()
+    
+    # Remove exact placeholder matches (case-insensitive)
+    for placeholder, replacement in _PLACEHOLDER_EXACT.items():
+        cleaned = re.sub(re.escape(placeholder), replacement, cleaned, flags=re.IGNORECASE)
+    
+    # Remove prompt leakage patterns (case-insensitive)
+    for pattern in _PROMPT_LEAKAGE_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+    
+    # Remove lines that look like prompt instructions
+    lines = cleaned.splitlines()
+    filtered_lines = []
+    for line in lines:
+        line_stripped = line.strip()
+        # Skip lines that are clearly prompt instructions (NOT real comic text)
+        if any(
+            line_stripped.lower().startswith(prefix)
+            for prefix in [
+                "---", "* * *", "regole:", "output json:", 
+                "cosa devi fare:", "produci solo il json", "sei un narratore",
+                "non usare:", "non inventare", "```"
+            ]
+        ):
+            continue
+        # Skip lines that are exactly the field example from the prompt JSON schema
+        if re.match(r'^(descrizione|titolo|personaggi|ambientazione|dialoghi|effetto_sonoro|durata_stimata)\s*[:=]\s*"', line_stripped, re.IGNORECASE):
+            continue
+        filtered_lines.append(line)
+    cleaned = "\n".join(filtered_lines)
+    
+    # Collapse multiple horizontal spaces but preserve newlines (for multi-line descriptions)
+    cleaned = re.sub(r'[ \t]+', ' ', cleaned).strip()
+    # Strip leading residual punctuation left by partial regex matches
+    cleaned = cleaned.lstrip('. ').strip()
+    
+    return cleaned
+
+
+def _sanitize_panel_result(result: dict, page_num: int) -> dict:
+    """
+    Apply sanitization to all text fields in a panel analysis result dict.
+    Falls back to raw value if sanitization empties the field.
+    """
+    # Fields to sanitize
+    text_fields = ["descrizione", "titolo", "titolo_scena", "personaggi", "ambientazione", 
+                   "dialoghi", "effetto_sonoro", "descrizione_narrativa"]
+    
+    for field in text_fields:
+        if field in result and isinstance(result[field], str):
+            original = result[field]
+            sanitized = _sanitize_llm_field(original, field)
+            # Heuristic: keep sanitized only if it retains a reasonable portion of
+            # the original text (avoids over-sanitization of real content)
+            min_kept_ratio = 0.25
+            min_kept_chars = 8
+            is_placeholder = original.strip() in _PLACEHOLDER_EXACT
+            
+            if is_placeholder:
+                # Known placeholder → always use sanitized (usually empty)
+                result[field] = sanitized
+            elif sanitized and (len(sanitized) >= len(original) * min_kept_ratio or len(sanitized) >= min_kept_chars):
+                # Sanitized result looks like real text → keep it
+                result[field] = sanitized
+            elif sanitized and len(original) < 20:
+                # Very short original, accept whatever remains
+                result[field] = sanitized
+            # else: keep original (sanitization probably stripped real content)
+    
+    # Fallback for empty description
+    if not result.get("descrizione", "").strip() and not result.get("descrizione_narrativa", "").strip():
+        result["descrizione"] = f"(Descrizione non disponibile per pagina {page_num})"
+        result["descrizione_narrativa"] = result["descrizione"]
+    
+    # Fallback for empty title
+    if not result.get("titolo", "").strip() and not result.get("titolo_scena", "").strip():
+        result["titolo"] = f"Pagina {page_num}"
+        result["titolo_scena"] = result["titolo"]
+    
+    return result
+
+
+# ---------------------------------------------------------------------------
 # JSON Parsers
 # ---------------------------------------------------------------------------
 
@@ -278,6 +395,9 @@ def parse_json_response(text: str, page_num: int) -> dict:
     for key, default in defaults.items():
         if key not in result:
             result[key] = default
+
+    # Sanitize prompt leakage / placeholders from LLM response fields
+    result = _sanitize_panel_result(result, page_num)
     return result
 
 
@@ -314,6 +434,8 @@ def parse_batch_json_response(text: str, batch_pages: list[dict]) -> list[dict]:
                 for key, default in defaults.items():
                     if key not in item:
                         item[key] = default
+                # Sanitize each result
+                item = _sanitize_panel_result(item, item.get("page_num", 0))
                 results.append(item)
             return results
     except (json.JSONDecodeError, TypeError):
@@ -366,6 +488,9 @@ def parse_synthesis_json(text: str) -> dict:
     # Clean common JSON issues
     json_str = re.sub(r',\s*}', '}', json_str)
     json_str = re.sub(r',\s*]', ']', json_str)
+    # Fix invalid single backslashes that are not valid JSON escapes
+    # Valid escapes: \" \\ \/ \b \f \n \r \t \uXXXX
+    json_str = re.sub(r'\\([^"\\/bfnrtu])', r'\\\\\1', json_str)
 
     try:
         result = json.loads(json_str)
@@ -375,6 +500,10 @@ def parse_synthesis_json(text: str) -> dict:
         for key in required:
             if key not in result:
                 result[key] = f"(MISSING: {key})"
+        # Sanitize synthesis text fields
+        for field in ["titolo_video", "script_narrativo", "genere", "colonna_sonora"]:
+            if field in result and isinstance(result[field], str):
+                result[field] = _sanitize_llm_field(result[field], field)
         return result
     except (json.JSONDecodeError, ValueError) as e:
         log(f"  Warning: could not parse synthesis JSON: {e}", "warning")
@@ -384,6 +513,6 @@ def parse_synthesis_json(text: str) -> dict:
             "genere": "",
             "personaggi_principali": [],
             "colonna_sonora": "",
-            "script_narrativo": raw[:5000],
+            "script_narrativo": _sanitize_llm_field(raw[:5000], "script_narrativo"),
             "durata_totale_stimata_minuti": 0,
         }

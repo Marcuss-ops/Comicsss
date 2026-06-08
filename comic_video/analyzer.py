@@ -25,7 +25,9 @@ from comic_video.ollama import (
     parse_json_response,
     parse_synthesis_json,
     DEFAULT_OLLAMA_URL,
+    _sanitize_llm_field,
 )
+from comic_video.config import OLLAMA_TIMEOUT_SECONDS
 from comic_video.panel_detector import Panel
 from comic_video.balloon_detector import detect_balloons_in_panel, Balloon, save_balloon_debug
 
@@ -39,7 +41,7 @@ def analyze_panel(
     panel: Panel,
     total_panels: int,
     ollama_url: str = DEFAULT_OLLAMA_URL,
-    timeout: int = 300,
+    timeout: int = OLLAMA_TIMEOUT_SECONDS,
     comic_title: str = "",
     use_balloon_ocr: bool = True,
     debug_balloons: bool = False,
@@ -183,7 +185,7 @@ def analyze_page_panels(
     model: str,
     panels: list[Panel],
     ollama_url: str = DEFAULT_OLLAMA_URL,
-    timeout: int = 300,
+    timeout: int = OLLAMA_TIMEOUT_SECONDS,
     comic_title: str = "",
     use_balloon_ocr: bool = True,
     debug_balloons: bool = False,
@@ -331,7 +333,7 @@ def synthesize_script(
     model: str,
     panel_analyses: list[dict],
     ollama_url: str = DEFAULT_OLLAMA_URL,
-    timeout: int = 600,
+    timeout: int = OLLAMA_TIMEOUT_SECONDS,
     comic_title: str = "",
 ) -> dict:
     """
@@ -408,7 +410,7 @@ def analyze_full_page(
     page_num: int,
     total_comic_pages: int,
     ollama_url: str = DEFAULT_OLLAMA_URL,
-    timeout: int = 300,
+    timeout: int = OLLAMA_TIMEOUT_SECONDS,
     comic_title: str = "",
 ) -> dict:
     """
@@ -470,6 +472,11 @@ Produci SOLO il JSON.
 
         result = json.loads(json_str)
         result["page_num"] = page_num
+        # Sanitize global page analysis fields
+        text_fields = ["atmosfera", "ruolo_narrativo", "composizione", "elementi_chiave", "transizione_emotiva"]
+        for field in text_fields:
+            if field in result and isinstance(result[field], str):
+                result[field] = _sanitize_llm_field(result[field], field)
         return result
     except Exception as e:
         log(f"    Warning: global page analysis failed for page {page_num}: {e}", "warning")
@@ -492,7 +499,7 @@ def synthesize_scene_json(
     panel_analyses: list[dict],
     page_analyses: list[dict] = None,
     ollama_url: str = DEFAULT_OLLAMA_URL,
-    timeout: int = 600,
+    timeout: int = OLLAMA_TIMEOUT_SECONDS,
     comic_title: str = "",
 ) -> list[dict]:
     """
@@ -602,43 +609,79 @@ def synthesize_scene_json(
     return _parse_scene_json(response_text)
 
 
+def _validate_scene_list(scenes: list) -> list[dict]:
+    """Validate and normalize a list of scene dicts."""
+    results = []
+    for item in scenes:
+        if not isinstance(item, dict):
+            continue
+        defaults = {
+            "scene_id": len(results) + 1,
+            "title": "Scena",
+            "pages": "",
+            "location": "",
+            "characters": [],
+            "visual_description": "",
+            "voiceover": "",
+            "dialogue_summary": "",
+            "mood": "",
+            "camera_style": "",
+            "youtube_hook": "",
+        }
+        for key, default in defaults.items():
+            if key not in item:
+                item[key] = default
+        results.append(item)
+    return results if results else _empty_scene_list()
+
+
 def _parse_scene_json(text: str) -> list[dict]:
     """Parse the scene synthesis JSON array response."""
     raw = text.strip()
     if not raw:
         return _empty_scene_list()
 
-    # Try markdown code blocks
-    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw)
+    # 1. Try direct JSON.parse first (fast path for clean responses)
+    try:
+        result = json.loads(raw)
+        if isinstance(result, list):
+            return _validate_scene_list(result)
+        if isinstance(result, dict):
+            if "scenes" in result:
+                return _validate_scene_list(result["scenes"])
+            return _validate_scene_list([result])
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Fallback: markdown code blocks
+    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw)
     if json_match:
         json_str = json_match.group(1).strip()
-    else:
-        # Try to find [...] array
-        json_match = re.search(r'(\[[\s\S]*\])', raw)
-        if json_match:
-            json_str = json_match.group(1).strip()
-        else:
-            json_str = raw
+        try:
+            result = json.loads(json_str)
+            if isinstance(result, list):
+                return _validate_scene_list(result)
+            if isinstance(result, dict) and "scenes" in result:
+                return _validate_scene_list(result["scenes"])
+        except json.JSONDecodeError:
+            pass
 
-    # Clean common JSON issues
-    json_str = re.sub(r',\s*}', '}', json_str)
-    json_str = re.sub(r',\s*]', ']', json_str)
+    # 3. Final fallback: find last [...] array and clean trailing commas
+    json_match = re.search(r'(\[[\s\S]*\])', raw)
+    if json_match:
+        json_str = json_match.group(1).strip()
+        json_str = re.sub(r',\s*}', '}', json_str)
+        json_str = re.sub(r',\s*]', ']', json_str)
+        try:
+            result = json.loads(json_str)
+            if isinstance(result, list):
+                return _validate_scene_list(result)
+        except json.JSONDecodeError:
+            pass
 
-    try:
-        result = json.loads(json_str)
-        if isinstance(result, dict):
-            # Maybe it's wrapped in { "scenes": [...] }
-            if "scenes" in result:
-                result = result["scenes"]
-            else:
-                return [result]
-        if not isinstance(result, list):
-            raise ValueError(f"Expected list, got {type(result).__name__}")
-        return result
-    except (json.JSONDecodeError, ValueError) as e:
-        log(f"  Warning: could not parse scene JSON: {e}", "warning")
-        log(f"  Raw (first 200): {raw[:200]}", "warning")
-        return _empty_scene_list()
+    log(f"  Warning: could not parse scene JSON", "warning")
+    log(f"  Raw (first 200): {raw[:200]}", "warning")
+    return _empty_scene_list()
 
 
 def _empty_scene_list() -> list[dict]:

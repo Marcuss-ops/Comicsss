@@ -1,11 +1,37 @@
+# Dependencies
 node_modules/
+
+# Build outputs
 build/
 dist/
 coverage/
+
+# OS files
 .DS_Store
-*.log
+Thumbs.db
+
+# Logs (keep directory but ignore files)
+logs/*.log
+logs/*.json
+
+# Environment
 .env*
 !.env.example
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+
+# Output directories (user-generated content)
+output/*
+!output/.gitkeep
+output_test*/
 test_output*/
+workspace/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

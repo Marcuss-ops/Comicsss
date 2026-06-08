@@ -1,6 +1,0 @@
-{
-  "name": "Comic & PDF Video Maker",
-  "description": "Convert uploaded PDFs and comic images into cinematic videos with narrated voices, sound effects, subtitles, and panning visuals.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

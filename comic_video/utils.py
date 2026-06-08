@@ -260,6 +260,34 @@ def extract_comic_title_from_filename(filename: str) -> str:
     return ' '.join(capitalized).strip() or Path(filename).stem
 
 
+def find_pdf(base_dir: Path, default_name: str = "comic.pdf") -> Path:
+    """
+    Search for a PDF file in base_dir or its parent.
+
+    Priority:
+        1. A file named <default_name> in base_dir
+        2. Any *.pdf found in base_dir (warn if multiple)
+        3. Any *.pdf found in base_dir.parent (warn if multiple)
+        4. Fallback to base_dir / <default_name>
+
+    Returns:
+        Path to the chosen PDF (may not exist if fallback is used).
+    """
+    default = base_dir / default_name
+    if default.exists():
+        return default
+
+    for d in (base_dir, base_dir.parent):
+        pdfs = sorted(d.glob("*.pdf"))
+        if pdfs:
+            if len(pdfs) > 1:
+                names = ", ".join(p.name for p in pdfs)
+                log(f"Multiple PDFs found in {d}: {names}. Using: {pdfs[0].name}", "warning")
+            return pdfs[0]
+
+    return default
+
+
 def print_summary_table(title: str, rows: list[tuple[str, str]]):
     """Print a summary table using rich or plain text."""
     if RICH_AVAILABLE:

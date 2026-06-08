@@ -60,7 +60,13 @@ from .balloon_detector import (
 from .analyzer import (
     analyze_panel,
     analyze_page_panels,
+    analyze_full_page,
     synthesize_script,
+    synthesize_scene_json,
+)
+
+from .ollama import (
+    SCENE_SYNTHESIS_PROMPT,
 )
 
 __all__ = [
@@ -72,11 +78,12 @@ __all__ = [
     "load_blurred_background", "extract_comic_title_from_filename",
     "print_summary_table",
     "call_ollama", "PANEL_PROMPT",
-    "FINAL_SYNTHESIS_PROMPT", "parse_json_response",
-    "parse_synthesis_json",
+    "FINAL_SYNTHESIS_PROMPT", "SCENE_SYNTHESIS_PROMPT",
+    "parse_json_response", "parse_synthesis_json",
     "DEFAULT_OLLAMA_URL",
     "extract_pdf_pages", "EASYOCR_AVAILABLE",
     "detect_panels", "Panel", "save_panels_debug",
     "detect_balloons", "detect_balloons_in_panel", "Balloon", "save_balloon_debug",
-    "analyze_panel", "analyze_page_panels", "synthesize_script",
+    "analyze_panel", "analyze_page_panels", "analyze_full_page",
+    "synthesize_script", "synthesize_scene_json",
 ]

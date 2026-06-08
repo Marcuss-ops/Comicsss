@@ -18,6 +18,7 @@ Esempi:
 """
 
 import argparse
+import datetime
 import json
 import sys
 import time
@@ -32,7 +33,7 @@ from comic_video.utils import (
     print_summary_table,
 )
 from comic_video.extractor import extract_pdf_pages, EASYOCR_AVAILABLE
-from comic_video.analyzer import analyze_page_panels, synthesize_script
+from comic_video.analyzer import analyze_page_panels, analyze_full_page, synthesize_script, synthesize_scene_json
 from comic_video.panel_detector import detect_panels, save_panels_debug
 from comic_video.ollama import DEFAULT_OLLAMA_URL
 
@@ -55,6 +56,8 @@ def save_output(
     output_dir: str,
     pdf_name: str,
     page_panels_map: dict[int, int] = None,
+    global_analyses: list[dict] = None,
+    scene_script: list[dict] = None,
 ):
     """
     Salva l'analisi in formato JSON strutturato.
@@ -65,6 +68,8 @@ def save_output(
         output_dir: Directory di output
         pdf_name: Nome del file PDF originale
         page_panels_map: Mappa {page_num: numero_pannelli}
+        global_analyses: Lista opzionale di analisi globali per-pagina
+        scene_script: Lista opzionale di scene YouTube transcript
     """
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -77,7 +82,30 @@ def save_output(
         "analisi_pannelli": panel_analyses,
         "script_video": synthesis,
     }
-    json_path = out_path / f"{base_name}_analisi_v3.json"
+
+    if global_analyses:
+        full_data["analisi_globali_pagine"] = global_analyses
+
+    if scene_script:
+        full_data["scene_transcript"] = scene_script
+        # Salva anche un file separato con solo le scene
+        scene_path = out_path / f"{base_name}_youtube_scenes.json"
+        total_pages_count = max(page_panels_map.keys()) if page_panels_map else 0
+        scene_output = {
+            "project": {
+                "title": synthesis.get("titolo_video", base_name),
+                "language": "it",
+                "source_pdf": pdf_name,
+                "total_pages": total_pages_count,
+                "format": "youtube_transcript_scene_json",
+            },
+            "scenes": scene_script,
+        }
+        with open(scene_path, "w", encoding="utf-8") as f:
+            json.dump(scene_output, f, ensure_ascii=False, indent=2)
+        log(f"Saved scene transcript: {scene_path}", "success")
+
+    json_path = out_path / f"{base_name}_analisi_v4.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(full_data, f, ensure_ascii=False, indent=2)
     log(f"Saved: {json_path}", "success")
@@ -170,7 +198,13 @@ Esempi:
                         help="Analizza TUTTE le pagine anche quelle senza balloon (default: salta intro/credits)")
     parser.add_argument("--debug-balloons", action="store_true",
                         help="Salva immagini debug con balloon evidenziati e testi OCR")
-    parser.add_argument("--version", action="version", version="Comic Video Maker v3.2.0")
+    parser.add_argument("--global-analysis", action="store_true",
+                        help="Aggiungi analisi GLOBALE della pagina (atmosfera, composizione) oltre ai pannelli")
+    parser.add_argument("--full-global", action="store_true",
+                        help="Analisi globale su TUTTE le pagine (default: ogni 5 pagine per risparmiare chiamate)")
+    parser.add_argument("--scene-json", action="store_true",
+                        help="Genera output scene JSON formato YouTube transcript (scena per scena)")
+    parser.add_argument("--version", action="version", version="Comic Video Maker v4.0.0")
 
     args = parser.parse_args()
 
@@ -308,10 +342,27 @@ Esempi:
     page_panels_map = {}  # {page_num: num_panels}
     total_panels_detected = 0
     total_panels_analyzed = 0
+    num_pages = len(extracted)
 
-    for page_data in extracted:
+    for page_idx, page_data in enumerate(extracted):
         page_num = page_data["page_num"]
         page_image = page_data["image"]
+
+        # --- Progress logging con ETA ---
+        elapsed = time.time() - start_time
+        pages_done = page_idx + 1
+        progress_pct = pages_done / num_pages * 100
+        if page_idx > 0 and elapsed > 0:
+            eta_remaining = (elapsed / page_idx) * (num_pages - page_idx)
+            eta_str = str(datetime.timedelta(seconds=int(eta_remaining)))
+        else:
+            eta_str = "?"
+        log(f"  [{pages_done}/{num_pages} | {elapsed:.0f}s elapsed | ETA: {eta_str}] Page {page_num}...", "info")
+
+        # Check timeout globale (5 min = 300s per pagina)
+        if args.timeout > 0 and elapsed > args.timeout:
+            log(f"  GLOBAL TIMEOUT ({args.timeout}s) reached after page {page_num}. Stopping.", "warning")
+            break
 
         # --- Panel detection ---
         panels = _detect_page_panels(page_image, page_num, args.no_panel_detect)
@@ -329,7 +380,7 @@ Esempi:
                 model=args.model,
                 panels=panels,
                 ollama_url=args.ollama_url,
-                timeout=args.timeout,
+                timeout=min(args.timeout, 300),  # Max 5 min per API call
                 comic_title=comic_title,
                 use_balloon_ocr=not args.no_balloon_ocr,
                 debug_balloons=args.debug_balloons,
@@ -340,7 +391,7 @@ Esempi:
             all_panel_analyses.extend(panel_results)
             total_panels_analyzed += len(panel_results)
 
-            if len(extracted) > 1:
+            if num_pages > 1:
                 time.sleep(1)
 
         except Exception as e:
@@ -378,13 +429,49 @@ Esempi:
             shutil.rmtree(pages_dir)
             log("Removed page images (--no-cache)", "info")
 
-    log(f"Total: {total_panels_detected} panels detected, {total_panels_analyzed} analyzed", "success")
+    elapsed_step2 = time.time() - start_time
+    log(f"Step 2 complete: {total_panels_detected} panels detected, {total_panels_analyzed} analyzed in {elapsed_step2:.0f}s", "success")
+
+    # ------------------------------------------------------------------
+    # Optional: Global page analysis
+    # ------------------------------------------------------------------
+    global_analyses = []
+    if args.global_analysis:
+        log("Step 3a/4: Analyzing full pages (global)...", "header")
+        # Sample ogni 5 pagine per risparmiare chiamate (full-global = tutte)
+        global_sample_step = 1 if args.full_global else 5
+        pages_for_global = [
+            p for p in extracted
+            if (p["page_num"] - 1) % global_sample_step == 0
+        ]
+        total_global = len(pages_for_global)
+        total_pages = len(extracted)
+        if total_global < total_pages:
+            log(f"  Global analysis: {total_global}/{total_pages} pages (sampling every {global_sample_step}th page)", "info")
+        for g_idx, page_data in enumerate(pages_for_global):
+            page_num = page_data["page_num"]
+            page_image = page_data["image"]
+            elapsed_global = time.time() - start_time
+            log(f"  Global analysis [{g_idx+1}/{total_global}] page {page_num} (elapsed: {elapsed_global:.0f}s)...", "info")
+            try:
+                ga = analyze_full_page(
+                    model=args.model,
+                    page_image=page_image,
+                    page_num=page_num,
+                    total_comic_pages=total_pdf_pages,
+                    ollama_url=args.ollama_url,
+                    timeout=min(args.timeout, 300),
+                    comic_title=comic_title,
+                )
+                global_analyses.append(ga)
+            except Exception as e:
+                log(f"  Global analysis error on page {page_num}: {e}", "warning")
 
     # ------------------------------------------------------------------
     # Step 3: Synthesize video script
     # ------------------------------------------------------------------
     if not args.no_synthesis:
-        log("Step 3/3: Creating video script...", "header")
+        log("Step 3/4: Creating video script...", "header")
         try:
             synthesis = synthesize_script(
                 args.model, all_panel_analyses,
@@ -397,9 +484,30 @@ Esempi:
         log("  Skipping synthesis (--no-synthesis)", "info")
         synthesis = create_fallback_script(comic_title, all_panel_analyses)
 
-    save_output(all_panel_analyses, synthesis, args.output, str(pdf_path), page_panels_map)
+    # ------------------------------------------------------------------
+    # Optional: Scene-by-scene YouTube transcript JSON
+    # ------------------------------------------------------------------
+    scene_script = []
+    if args.scene_json:
+        log("Step 4/4: Creating scene-by-scene YouTube transcript...", "header")
+        try:
+            scene_script = synthesize_scene_json(
+                model=args.model,
+                panel_analyses=all_panel_analyses,
+                page_analyses=global_analyses if global_analyses else None,
+                ollama_url=args.ollama_url,
+                timeout=args.timeout,
+                comic_title=comic_title,
+            )
+        except Exception as e:
+            log(f"  Scene synthesis error: {e}", "error")
+
+    save_output(all_panel_analyses, synthesis, args.output, str(pdf_path), page_panels_map,
+                global_analyses=global_analyses, scene_script=scene_script)
     elapsed = time.time() - start_time
     print_summary(all_panel_analyses, synthesis, page_panels_map, elapsed, total_panels_analyzed)
+    if scene_script:
+        log(f"Scene transcript: {len(scene_script)} scenes generated", "success")
     log("Done! 🎉", "success")
 
 
@@ -416,6 +524,7 @@ def _detect_page_panels(
             x=0, y=0,
             width=page_image.width, height=page_image.height,
             image=page_image, is_full_page=True,
+            page_width=page_image.width, page_height=page_image.height,
         )]
     return detect_panels(page_image, page_num)
 

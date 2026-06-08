@@ -34,6 +34,8 @@ class Panel:
     height: int            # Altezza in pixel
     image: Image.Image     # Immagine ritagliata del pannello
     is_full_page: bool = False  # True se è una splash page / pagina intera
+    page_width: int = 0        # Larghezza totale della pagina (per normalizzazione)
+    page_height: int = 0       # Altezza totale della pagina (per normalizzazione)
 
 
 def detect_panels(
@@ -100,6 +102,7 @@ def detect_panels(
             page_num=page_num, panel_index=0,
             x=0, y=0, width=img_w, height=img_h,
             image=page_image, is_full_page=True,
+            page_width=img_w, page_height=img_h,
         )]
 
     # --- Unisci rettangoli sovrapposti ---
@@ -113,6 +116,7 @@ def detect_panels(
                 page_num=page_num, panel_index=0,
                 x=0, y=0, width=img_w, height=img_h,
                 image=page_image, is_full_page=True,
+                page_width=img_w, page_height=img_h,
             )]
 
     # --- Ordina per ordine di lettura (Y principale, X secondario) ---
@@ -137,6 +141,7 @@ def detect_panels(
             x=x, y=y, width=w, height=h,
             image=panel_img,
             is_full_page=is_full,
+            page_width=img_w, page_height=img_h,
         ))
 
     method = "gutter+contour" if gutter_rects else "contour-only"

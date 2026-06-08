@@ -37,12 +37,16 @@ def call_ollama(
     ollama_url: str = DEFAULT_OLLAMA_URL,
     temperature: float = 0.1,
     max_retries: int = 3,
-    timeout: int = 600,
+    timeout: int = 300,
 ) -> str:
     """
     Call Ollama generate API with optional images (base64).
+    TIMEOUT: default 300s (5 min). Logga ogni tentativo.
     Returns the generated text.
     """
+    has_images = f" with {len(images)} image(s)" if images else ""
+    log(f"    Calling Ollama {model}{has_images} (timeout={timeout}s)...", "info")
+
     payload: dict[str, Any] = {
         "model": model,
         "prompt": prompt,
@@ -58,24 +62,29 @@ def call_ollama(
 
     for attempt in range(max_retries):
         try:
+            log(f"      Ollama request attempt {attempt+1}/{max_retries}...", "info")
             resp = requests.post(url, json=payload, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("response", "")
-        except requests.exceptions.ConnectionError:
-            log(f"  Cannot connect to Ollama at {ollama_url} (attempt {attempt+1}/{max_retries})", "error")
+            response_text = data.get("response", "")
+            log(f"      Ollama response: {len(response_text)} chars", "success")
+            return response_text
+        except requests.exceptions.ConnectionError as e:
+            log(f"      Cannot connect to Ollama at {ollama_url}: {e}", "error")
             if attempt < max_retries - 1:
+                log(f"      Retrying in 2s... (attempt {attempt+1}/{max_retries})", "warning")
                 time.sleep(2)
             else:
                 raise
-        except requests.exceptions.Timeout:
-            log(f"  Ollama request timed out (attempt {attempt+1}/{max_retries})", "warning")
+        except requests.exceptions.Timeout as e:
+            log(f"      Ollama request TIMED OUT after {timeout}s (attempt {attempt+1}/{max_retries})", "warning")
             if attempt < max_retries - 1:
+                log(f"      Retrying in 2s... (attempt {attempt+1}/{max_retries})", "warning")
                 time.sleep(2)
             else:
                 raise
         except Exception as e:
-            log(f"  Ollama API error: {e}", "error")
+            log(f"      Ollama API error: {e}", "error")
             raise
 
     return ""
@@ -133,6 +142,42 @@ Analizza SOLO QUESTA singola vignetta.
 Produci SOLO il JSON, nient'altro.
 """
 
+
+
+SCENE_SYNTHESIS_PROMPT = """Sei un regista e sceneggiatore YouTube specializzato nella creazione di transcript per video narrazione di fumetti.
+
+Fumetto: "{comic_title}"
+
+Hai davanti le analisi complete di TUTTE le pagine del fumetto, suddivise in vignette.
+
+Il tuo compito: RAGGRUPPA le pagine in SCENE (tipicamente 2-4 pagine per scena) e per
+ogni scena produci un oggetto JSON con questo formato ESATTO:
+
+{{
+  "scene_id": 1,
+  "title": "Titolo breve della scena",
+  "pages": "1-3",
+  "location": "Luogo della scena",
+  "characters": ["Batman", "Joker"],
+  "visual_description": "Descrizione visiva della scena (2-3 frasi)",
+  "voiceover": "Testo che il narratore legge per questa scena (in italiano, 3-6 frasi)",
+  "dialogue_summary": "Riassunto dei dialoghi principali della scena",
+  "mood": "Tono emotivo (es. cupo, teso, malinconico, drammatico)",
+  "camera_style": "Stile visuale suggerito (es. slow pan, zoom-in, fade)",
+  "youtube_hook": "Frase di aggancio per mantenere l'attenzione (1 frase)"
+}}
+
+REGOLE:
+- Ogni scena deve coprire 2-4 pagine consecutive
+- Inizia con una scena hook (copertina o prime pagine)
+- Raggruppa logicamente le pagine che condividono stesso luogo/evento
+- Scrivi voiceover in ITALIANO, come se parlassi a voce alta
+- La durata di ogni voce deve essere ~20-45 secondi letta
+- Produci un ARRAY JSON di scene, nient'altro
+
+Analisi completa del fumetto:
+{full_context}
+"""
 
 
 FINAL_SYNTHESIS_PROMPT = """Sei un regista e narratore YouTube. Hai appena letto tutto il fumetto "{comic_title}".

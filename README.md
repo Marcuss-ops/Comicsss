@@ -2,7 +2,7 @@
 
 **Analizza fumetti PDF con un LLM locale (Ollama) e genera script narrativi per video YouTube.**
 
-Prende un PDF di un fumetto, estrae ogni pagina come immagine, le analizza con un modello vision-language tramite Ollama (es. Gemma 4 E4B, Llama 3.2 Vision), e produce descrizioni narrative dettagliate per ogni pagina — con supporto batch per velocizzare l'elaborazione.
+Prende un PDF di un fumetto, estrae ogni pagina come immagine, le segmenta in vignette con OpenCV, rileva balloon e testo con EasyOCR, e analizza ogni vignetta con un modello vision-language tramite Ollama (es. LLaVA 13B, Llama 3.2 Vision). Produce descrizioni narrative dettagliate, script video YouTube e transcript scena-per-scena.
 
 > 🇮🇹 **Tool progettato per l'italiano** — prompt, descrizioni e dialoghi sono tutti in italiano.
 
@@ -12,14 +12,17 @@ Prende un PDF di un fumetto, estrae ogni pagina come immagine, le analizza con u
 
 | Funzionalità | Descrizione |
 |---|---|
-| 🖼️ **Estrazione PDF** | Estrae ogni pagina come PNG (200 DPI) con fallback a bassa risoluzione |
-| 🤖 **Analisi LLM locale** | Usa Ollama con modelli vision (gemma4:e4b, llama3.2-vision, ecc.) |
-| 📦 **Batch processing** | Invia 3-4 pagine per chiamata API (default: 4) — 10x più veloce |
-| 🏷️ **Contesto fumetto** | Specifica il titolo con `--title` per identificazione corretta dei personaggi |
-| 🦇 **Niente allucinazioni** | I prompt istruiscono il modello a usare i VERI nomi dei personaggi (Batman, Joker, ecc.) |
-| 🎬 **Sintesi video** | Opzionale: crea uno script YouTube unificato da TUTTE le pagine |
-| 📊 **Output strutturato** | Salva analisi in JSON + TXT (per-pagina e script video) |
-| 🎨 **Barra di progresso** | Rich UI con `rich` (colori, tabelle, barre di progresso) |
+| 🖼️ **Estrazione PDF** | Estrae ogni pagina come PNG (200 DPI) con caching automatico |
+| 📐 **Panel Detection** | Rileva vignette con doppio algoritmo (gutter + contour) — layout regolari e irregolari |
+| 🎈 **Balloon OCR** | Rileva fumetti e estrae testo con EasyOCR (fallback full-image OCR) |
+| 🤖 **Analisi LLM locale** | Usa Ollama con modelli vision (llava:13b, llama3.2-vision, gemma4:e4b) |
+| 🦇 **Niente allucinazioni** | Ogni vignetta analizzata singolarmente + OCR affidabile dal balloon |
+| 🎬 **Sintesi video** | Script YouTube unificato da TUTTE le vignette |
+| 🎭 **Scene Transcript** | Raggruppa pagine in scene e produce JSON formato YouTube (--scene-json) |
+| 🌍 **Global Analysis** | Analisi atmosfera globale della pagina oltre ai singoli pannelli (--global-analysis) |
+| 🧪 **Dry-run skip** | Mostra quali pagine verrebbero saltate senza chiamare LLM (--dry-run-skip) |
+| 🐞 **Debug visivo** | Immagini debug con pannelli e balloon evidenziati |
+| 📊 **Output strutturato** | Salva analisi in JSON v4 + scene transcript separato |
 
 ---
 
@@ -32,23 +35,17 @@ Prende un PDF di un fumetto, estrae ogni pagina come immagine, le analizza con u
 ### Modelli consigliati
 
 ```bash
-# Google Gemma 4 E4B (consigliato - supporto vision nativo)
+# Meta Llama 3.2 Vision (consigliato - 11B, contesto 128K)
+ollama pull llama3.2-vision:11b
+
+# LLaVA 13B (buon bilanciamento)
+ollama pull llava:13b
+
+# Google Gemma 4 E4B
 ollama pull gemma4:e4b
-
-# Meta Llama 3.2 Vision
-ollama pull llama3.2-vision
-
-# LLaVA
-ollama pull llava
 ```
 
 ### Dipendenze Python
-
-```bash
-pip install PyMuPDF Pillow requests rich
-```
-
-O in alternativa:
 
 ```bash
 pip install -r requirements-cli.txt
@@ -56,15 +53,9 @@ pip install -r requirements-cli.txt
 
 ### Avvia Ollama
 
-Prima di usare lo script, assicurati che Ollama sia in esecuzione:
-
 ```bash
 # Avvia il server Ollama (se non già attivo)
 ollama serve
-
-# Opzionale: tieni il modello in memoria per la prima risposta più veloce
-ollama run gemma4:e4b
-# (premi Ctrl+D per uscire mantenendo il modello in cache)
 ```
 
 ---
@@ -77,33 +68,16 @@ ollama run gemma4:e4b
 python comic-video-maker.py "4fumetti-ita-batman-the-killing-joke-dc.pdf"
 ```
 
-### Con titolo del fumetto (RACCOMANDATO!)
-
-Specificando il titolo con `--title`, il modello SA cosa sta guardando e identifica correttamente i personaggi:
+### Con tutte le feature avanzate
 
 ```bash
 python comic-video-maker.py "fumetto.pdf" \
   --title "Batman: The Killing Joke" \
-  -o output
-```
-
-### Senza `--title` (auto-estrazione dal filename)
-
-Se non passi `--title`, il titolo viene estratto automaticamente dal nome del file:
-
-```
-4fumetti-ita-batman-the-killing-joke-dc.pdf  →  "Batman The Killing Joke"
-spider-man-2099-ita.pdf                       →  "Spider Man 2099"
-```
-
-### Batch processing (consigliato)
-
-Analizza 4 pagine per chiamata Ollama — molto più veloce:
-
-```bash
-python comic-video-maker.py "fumetto.pdf" \
-  --title "Batman: The Killing Joke" \
-  --batch-size 4 \
+  --model llava:13b \
+  --global-analysis \
+  --scene-json \
+  --debug-panels \
+  --no-skip-no-balloon \
   -o output
 ```
 
@@ -124,58 +98,71 @@ python comic-video-maker.py "fumetto.pdf" --pages 1-10
 
 # Pagine specifiche
 python comic-video-maker.py "fumetto.pdf" --pages 1,3,5,7
-
-# Combinazione
-python comic-video-maker.py "fumetto.pdf" --pages 1-5,10,15-20
 ```
 
-### Dry-run (solo estrazione pagine, nessuna analisi)
+### Dry-run (solo estrazione pagine + panel detect, nessuna analisi)
 
 ```bash
 python comic-video-maker.py "fumetto.pdf" --dry-run
+```
+
+### Dry-run skip (mostra quali pagine verrebbero saltate)
+
+```bash
+python comic-video-maker.py "fumetto.pdf" --dry-run-skip
 ```
 
 ### Modello personalizzato
 
 ```bash
 python comic-video-maker.py "fumetto.pdf" \
-  -m llama3.2-vision \
+  -m llama3.2-vision:11b \
   --ollama-url http://localhost:11434
 ```
 
 ---
 
-## ⚙️ Argomenti CLI
+## ⚙️ Argomenti CLI completi
 
 | Argomento | Default | Descrizione |
 |---|---|---|
 | `pdf` | *(obbligatorio)* | Percorso del file PDF del fumetto |
 | `-o, --output` | `output` | Directory di output |
-| `-m, --model` | `gemma4:e4b` | Modello Ollama da usare |
+| `-m, --model` | `llava:13b` | Modello Ollama da usare |
 | `--ollama-url` | `http://localhost:11434` | URL del server Ollama |
 | `--pages` | *(tutte)* | Pagine da elaborare (es. `1-10`, `1,3,5-7`) |
-| `--batch-size` | `4` | Pagine per chiamata Ollama (default: 4) |
 | `--dpi` | `200` | DPI per estrazione pagine |
-| `--timeout` | `600` | Timeout per chiamata API (secondi) |
-| `--temperature` | `0.3` | Temperature del modello |
+| `--timeout` | `300` | Timeout per chiamata API (secondi) |
 | `--title` | *(auto)* | Titolo del fumetto (es. `"Batman: The Killing Joke"`) |
 | `--no-synthesis` | *(off)* | Salta la sintesi finale dello script video |
-| `--dry-run` | *(off)* | Solo estrai pagine, non chiamare Ollama |
-| `--keep-images` | *(off)* | Mantieni le immagini dopo l'analisi |
+| `--no-panel-detect` | *(off)* | Disabilita panel detection (analisi pagina intera) |
+| `--no-ocr` | *(off)* | Disabilita OCR EasyOCR |
+| `--no-cache` | *(off)* | Rimuovi immagini pagina dopo analisi |
+| `--no-balloon-ocr` | *(off)* | Disabilita rilevamento balloon + OCR |
+| `--no-skip-no-balloon` | *(off)* | Analizza TUTTE le pagine (anche senza balloon) |
+| `--global-analysis` | *(off)* | Aggiungi analisi globale della pagina (atmosfera, composizione) |
+| `--scene-json` | *(off)* | Genera output scene JSON formato YouTube transcript |
+| `--dry-run` | *(off)* | Solo estrai pagine + panel detect, nessuna chiamata LLM |
+| `--dry-run-skip` | *(off)* | Mostra quali pagine verrebbero saltate |
+| `--debug-panels` | *(off)* | Salva immagini debug con pannelli evidenziati |
+| `--debug-balloons` | *(off)* | Salva immagini debug con balloon evidenziati e testi OCR |
 | `--version` | — | Mostra versione |
 
 ---
 
 ## 🧪 Esempi completi
 
-### 1. Analisi completa di Batman: The Killing Joke (52 pagine, batch 4)
+### 1. Analisi completa di Batman: The Killing Joke + scene transcript
 
 ```bash
 python comic-video-maker.py "4fumetti-ita-batman-the-killing-joke-dc.pdf" \
   -o output_batman \
   --title "Batman: The Killing Joke" \
-  --batch-size 4 \
-  --keep-images
+  --model llava:13b \
+  --global-analysis \
+  --scene-json \
+  --debug-panels \
+  --no-skip-no-balloon
 ```
 
 ### 2. Solo analisi pagine 1-10, senza sintesi
@@ -184,7 +171,6 @@ python comic-video-maker.py "4fumetti-ita-batman-the-killing-joke-dc.pdf" \
 python comic-video-maker.py "fumetto.pdf" \
   --title "Watchmen" \
   --pages 1-10 \
-  --batch-size 3 \
   --no-synthesis \
   -o output_10pg
 ```
@@ -195,9 +181,9 @@ python comic-video-maker.py "fumetto.pdf" \
 python comic-video-maker.py "fumetto.pdf" \
   --title "Batman: The Killing Joke" \
   --pages 1-4 \
-  --batch-size 2 \
   --no-synthesis \
-  --keep-images \
+  --debug-panels \
+  --no-cache \
   -o test_fast
 ```
 
@@ -205,34 +191,41 @@ python comic-video-maker.py "fumetto.pdf" \
 
 ## 📂 Output
 
-Lo script genera 3 file nella directory di output:
+Lo script genera nella directory di output:
 
 | File | Contenuto |
 |---|---|
-| `*_analisi.json` | Dati strutturati completi (tutte le pagine + script video) |
-| `*_script_pagine.txt` | Descrizione narrativa per OGNI pagina (leggibile) |
-| `*_script_video.txt` | Script video YouTube unificato (solo con sintesi) |
-| `pages/` | Immagini delle pagine (solo con `--keep-images`) |
+| `*_analisi_v4.json` | Dati strutturati completi (analisi pannelli, script video, analisi globali, scene) |
+| `*_scene_transcript.json` | Transcript scene formato YouTube (solo con `--scene-json`) |
+| `pages/` | Immagini delle pagine estratte (cache) |
+| `debug_panels/` | Immagini debug con pannelli evidenziati (solo con `--debug-panels`) |
+| `debug_balloons/` | Immagini debug con balloon evidenziati (solo con `--debug-balloons`) |
 
-### Esempio di output per-pagina
+### Formato scene transcript
 
-```
-============================================================
-PAGINA 1 — L'Anarchia del Riso
-============================================================
-
-🎬 DESCRIZIONE NARRATIVA:
-Il tono è immediatamente cupo e opprimente. La scena ci immerge
-in un vicolo urbano notturno, dove le ombre sembrano avere vita
-propria, accarezzando i contorni di Batman. Il Joker si muove
-come una forza gravitazionale negativa...
-
-💬 DIALOGHI:
-Joker: "E tu credi davvero di poter fermarmi? Solo un riso che continua..."
-
-👥 PERSONAGGI: Batman, Joker
-🔊 EFFETTO SONORO: WHOOSH!
-⏱ DURATA: 18 secondi
+```json
+{
+  "project": {
+    "title": "Batman: The Killing Joke",
+    "language": "it",
+    "format": "youtube_transcript_scene_json"
+  },
+  "scenes": [
+    {
+      "scene_id": 1,
+      "title": "Il Sorriso di Gotham",
+      "pages": "1-3",
+      "location": "Vicolo di Gotham City, notte",
+      "characters": ["Batman", "Joker"],
+      "visual_description": "La città è avvolta nell'oscurità...",
+      "voiceover": "Benvenuti a Gotham City...",
+      "dialogue_summary": "Joker: 'Perché così serio?'",
+      "mood": "Cupo, opprimente",
+      "camera_style": "Slow pan dall'alto",
+      "youtube_hook": "Cosa trasforma un uomo in un mostro?"
+    }
+  ]
+}
 ```
 
 ---
@@ -245,37 +238,45 @@ PDF Fumetto
     ▼
 ┌─────────────────────┐
 │  Estrazione pagine   │  PyMuPDF (200 DPI)
-│  (salvataggio come   │
-│   PNG + resize)      │
+│  (PNG + caching)     │
 └─────────┬───────────┘
           │
           ▼
 ┌─────────────────────┐
-│  Batch processing    │  4 pagine per chiamata
-│  (analisi con LLM    │  Ollama API /api/generate
-│   visione)           │  Prompt in italiano
+│  Panel Detection     │  OpenCV (gutter + contour)
+│  (vignette per pag.) │  Ordine di lettura Y→X
 └─────────┬───────────┘
           │
           ▼
 ┌─────────────────────┐
-│  Output strutturato  │  JSON + TXT
-│  (descrizioni,       │
-│   dialoghi, effetti) │
+│  Balloon OCR         │  EasyOCR
+│  (testo dai fumetti) │  Fallback full-image OCR
 └─────────┬───────────┘
           │
           ▼
 ┌─────────────────────┐
-│  Sintesi video (opt) │  Script YouTube unificato
-│  (tutte le pagine    │  da 2000-4000 parole
-│   in unico script)   │
+│  LLM Vision          │  Ogni vignetta
+│  (analisi per panel) │  USANDO il testo OCR
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│  Global Analysis     │  Analisi atmosfera
+│  (opzionale)         │  intera pagina
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│  Scene Synthesis     │  Raggruppa pagine
+│  (opzionale)         │  in scene YouTube
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│  Output JSON         │  v4: analisi + scene
+│  + scene transcript  │  + script video
 └─────────────────────┘
 ```
-
-### Perché usare `--title`?
-
-Senza il titolo, il modello **inventa personaggi** — potrebbe chiamare Batman "Kaito" o "Kael", il Joker "Silas", e creare una storia fantasy generica.
-
-Con `--title "Batman: The Killing Joke"`, il prompt dice esplicitamente al modello cosa sta guardando, e le descrizioni diventano **accurate** — con Batman, Joker, Barbara Gordon, Commissioner Gordon, ecc.
 
 ---
 

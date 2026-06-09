@@ -92,19 +92,17 @@ def make_page_frame(image_path, use_blur: bool = True, page_scale: float = 0.68)
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
 
-    # Sfondo: blur cinematografico oppure canvas scuro semplice
-    if use_blur:
-        scale = max(VIDEO_WIDTH / w, VIDEO_HEIGHT / h)
-        bg = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-        l = (bg.width - VIDEO_WIDTH) // 2
-        t = (bg.height - VIDEO_HEIGHT) // 2
-        bg = bg.crop((l, t, l + VIDEO_WIDTH, t + VIDEO_HEIGHT))
-        bg = bg.filter(ImageFilter.GaussianBlur(35))
-        bg = ImageEnhance.Brightness(bg).enhance(0.5)
-        bg_arr = np.array(bg)
-        bg.close()
-    else:
-        bg_arr = np.full((VIDEO_HEIGHT, VIDEO_WIDTH, 3), (10, 10, 14), dtype=np.uint8)
+    # Sfondo: sempre la stessa immagine riempita a tutto schermo e sfocata.
+    scale = max(VIDEO_WIDTH / w, VIDEO_HEIGHT / h)
+    bg = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    l = (bg.width - VIDEO_WIDTH) // 2
+    t = (bg.height - VIDEO_HEIGHT) // 2
+    bg = bg.crop((l, t, l + VIDEO_WIDTH, t + VIDEO_HEIGHT))
+    blur_amount = 35 if use_blur else 14
+    bg = bg.filter(ImageFilter.GaussianBlur(blur_amount))
+    bg = ImageEnhance.Brightness(bg).enhance(0.5)
+    bg_arr = np.array(bg)
+    bg.close()
 
     # Primo piano: sempre piccolo e centrato, mai stretchato a schermo intero
     fw = int(VIDEO_WIDTH * page_scale)
@@ -134,6 +132,25 @@ def make_page_frame_file(image_path: str, out_path: Path, use_blur: bool = True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(frame).save(out_path)
     return out_path
+
+
+def _zoom_frame(frame: np.ndarray, t: float, duration: float, start_scale: float = 1.0, end_scale: float = 1.02) -> np.ndarray:
+    if duration <= 0:
+        return frame
+    progress = min(max(t / duration, 0.0), 1.0)
+    scale = start_scale + (end_scale - start_scale) * progress
+    if abs(scale - 1.0) < 1e-3:
+        return frame
+
+    h, w = frame.shape[:2]
+    new_w = max(1, int(w * scale))
+    new_h = max(1, int(h * scale))
+    img = Image.fromarray(frame).resize((new_w, new_h), Image.LANCZOS)
+
+    left = max(0, (new_w - w) // 2)
+    top = max(0, (new_h - h) // 2)
+    img = img.crop((left, top, left + w, top + h))
+    return np.array(img)
 
 
 def _split_into_chunks(items: list, chunk_size: int) -> list[list]:
@@ -182,7 +199,9 @@ def _render_pages_chunk(
             fdir / f"page_{num:04d}_blur{int(use_blur)}.png",
             use_blur=use_blur,
         )
-        clips.append(ImageClip(str(frame_path)).with_duration(duration).with_audio(audio_clip))
+        page_clip = ImageClip(str(frame_path)).with_duration(duration).with_audio(audio_clip)
+        page_clip = page_clip.transform(lambda gf, t: _zoom_frame(gf(t), t, duration))
+        clips.append(page_clip)
         audio_clips.append(audio_clip)
 
     if not clips:

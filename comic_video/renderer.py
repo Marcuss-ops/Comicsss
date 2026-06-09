@@ -87,7 +87,7 @@ def _page_narration_text(page: dict) -> str:
     )
 
 
-def make_page_frame(image_path, use_blur: bool = True, page_scale: float = 0.68):
+def make_page_frame(image_path, use_blur: bool = True, page_scale: float = 0.78):
     """Crea UN SOLO frame statico per pagina, da riusare per tutta la durata."""
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
@@ -100,7 +100,7 @@ def make_page_frame(image_path, use_blur: bool = True, page_scale: float = 0.68)
     bg = bg.crop((l, t, l + VIDEO_WIDTH, t + VIDEO_HEIGHT))
     blur_amount = 35 if use_blur else 14
     bg = bg.filter(ImageFilter.GaussianBlur(blur_amount))
-    bg = ImageEnhance.Brightness(bg).enhance(0.5)
+    bg = ImageEnhance.Brightness(bg).enhance(0.4)
     bg_arr = np.array(bg)
     bg.close()
 
@@ -134,7 +134,7 @@ def make_page_frame_file(image_path: str, out_path: Path, use_blur: bool = True)
     return out_path
 
 
-def _zoom_frame(frame: np.ndarray, t: float, duration: float, start_scale: float = 1.0, end_scale: float = 1.02) -> np.ndarray:
+def _zoom_frame(frame: np.ndarray, t: float, duration: float, start_scale: float = 1.0, end_scale: float = 1.15) -> np.ndarray:
     if duration <= 0:
         return frame
     progress = min(max(t / duration, 0.0), 1.0)
@@ -163,20 +163,13 @@ def _render_pages_chunk(
     chunk_pages: list[dict],
     pages_dir: str,
     audio_dir: str,
-    chunk_output: str,
     use_blur: bool,
-    fps: int,
-) -> str:
+) -> list:
+    """Crea una lista di MoviePy clips per un chunk di pagine (senza scrivere file intermedi)."""
     pages_path = Path(pages_dir)
     audio_path = Path(audio_dir)
-    out_path = Path(chunk_output)
-    temp = Path(tempfile.mkdtemp(prefix="cv_chunk_"))
-    fdir = temp / "f"
-    fdir.mkdir()
-
+    
     clips = []
-    audio_clips = []
-
     for pagina in chunk_pages:
         num = pagina["pagina"]
         img_path = None
@@ -192,47 +185,57 @@ def _render_pages_chunk(
         if not ap or not ap.exists():
             continue
 
-        audio_clip = AudioFileClip(str(ap))
-        duration = max(float(audio_clip.duration or 0.0), 0.1) + 0.05
-        frame_path = make_page_frame_file(
-            str(img_path),
-            fdir / f"page_{num:04d}_blur{int(use_blur)}.png",
-            use_blur=use_blur,
-        )
-        page_clip = ImageClip(str(frame_path)).with_duration(duration).with_audio(audio_clip)
-        page_clip = page_clip.transform(lambda gf, t: _zoom_frame(gf(t), t, duration))
-        clips.append(page_clip)
-        audio_clips.append(audio_clip)
-
-    if not clips:
-        raise RuntimeError("Chunk without clips")
-
-    final = concatenate_videoclips(clips, method="chain")
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    final.write_videofile(str(out_path), fps=fps, codec="libx264", audio_codec="aac",
-        bitrate="3000k", logger=None, preset="ultrafast", threads=4)
-
-    for c in clips:
         try:
-            c.close()
-        except:
-            pass
-    for a in audio_clips:
-        try:
-            a.close()
-        except:
-            pass
-    try:
-        final.close()
-    except:
-        pass
-    try:
-        import shutil
-        shutil.rmtree(temp, ignore_errors=True)
-    except:
-        pass
-    return str(out_path)
+            audio_clip = AudioFileClip(str(ap))
+            duration = float(audio_clip.duration or 0.1)
+            
+            # Creiamo il frame della pagina (usiamo una cache se possibile, o generiamo al volo)
+            # Per ora generiamo al volo, ma render_narration_video può pre-generarli in parallelo.
+            frame = make_page_frame(str(img_path), use_blur=use_blur)
+            page_clip = ImageClip(frame).with_duration(duration).with_audio(audio_clip)
+            page_clip = page_clip.transform(lambda gf, t: _zoom_frame(gf(t), t, duration))
+            clips.append(page_clip)
+        except Exception as e:
+            log(f"  Errore clip pagina {num}: {e}", "warning")
+
+    return clips
+
+
+def make_collage_frame(image_paths: list[Path], width: int = VIDEO_WIDTH, height: int = VIDEO_HEIGHT):
+    """Crea un collage di più pagine (es. le prime 5) per l'intro."""
+    canvas = Image.new("RGB", (width, height), (15, 15, 20))
+    n = len(image_paths)
+    if n == 0:
+        return np.array(canvas)
+    
+    # Calcoliamo la griglia
+    cols = 3 if n > 3 else n
+    rows = (n + cols - 1) // cols
+    
+    pw = width // cols
+    ph = height // rows
+    
+    for i, path in enumerate(image_paths):
+        img = Image.open(str(path)).convert("RGB")
+        # Scale to fit cell while keeping aspect ratio
+        img.thumbnail((pw - 20, ph - 20), Image.LANCZOS)
+        
+        r = i // cols
+        c = i % cols
+        
+        # Centra nella cella
+        ox = c * pw + (pw - img.width) // 2
+        oy = r * ph + (ph - img.height) // 2
+        canvas.paste(img, (ox, oy))
+        img.close()
+    
+    # Aggiungi un overlay scuro per il testo
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 100))
+    canvas.paste(overlay, (0, 0), overlay)
+    
+    res = np.array(canvas)
+    canvas.close()
+    return res
 
 
 def render_narration_video(json_path, pages_dir, output_path,
@@ -264,8 +267,12 @@ def render_narration_video(json_path, pages_dir, output_path,
     temp = Path(tempfile.mkdtemp(prefix="cv_"))
     adir = temp / "a"
     adir.mkdir()
-    fdir = temp / "f"
-    fdir.mkdir()
+
+    # Se l'intro_text non è fornito ma è nel JSON (intro_forte), usiamolo
+    if not intro_text:
+        intro_text = data.get("intro_forte") or data.get("intro")
+    if not outro_text:
+        outro_text = data.get("finale_forte_prime_10_pagine") or data.get("outro")
 
     page_jobs: list[_TTSJob] = []
     if intro_text:
@@ -273,88 +280,115 @@ def render_narration_video(json_path, pages_dir, output_path,
     if outro_text:
         page_jobs.append(_TTSJob("outro", outro_text, adir / "outro.mp3"))
 
-    page_audio_map: dict[int, Path] = {}
-    for idx, pagina in enumerate(pagine):
+    for pagina in pagine:
         num = pagina["pagina"]
         nar = _page_narration_text(pagina)
-        if not nar.strip():
-            log(f"  #{num}: salto", "warning")
-            continue
-
-        img_path = None
-        for pat in [f"page_{num:04d}.png", f"page_{num}.png", f"page{num:04d}.png"]:
-            c = pages_path / pat
-            if c.exists():
-                img_path = c
-                break
-        if not img_path:
-            log(f"    Non trovata", "warning")
-            continue
-
-        page_audio_map[num] = adir / f"p{num}.mp3"
-        page_jobs.append(_TTSJob(str(num), nar, page_audio_map[num]))
+        if not nar.strip(): continue
+        page_jobs.append(_TTSJob(str(num), nar, adir / f"p{num}.mp3"))
 
     if page_jobs:
-        log(f"  Generating audio in parallel ({min(tts_workers, len(page_jobs))} workers)...", "info")
-        try:
-            asyncio.run(_generate_tts_jobs(page_jobs, voice, voice_rate, voice_pitch, workers=tts_workers))
-        except Exception as e:
-            log(f"  TTS batch error: {e}", "error")
-            raise
+        log(f"  Generazione audio ({len(page_jobs)} job)...", "info")
+        asyncio.run(_generate_tts_jobs(page_jobs, voice, voice_rate, voice_pitch, workers=tts_workers))
 
-    # Render pages in parallel chunks, then concatenate chunk videos.
-    page_chunks = _split_into_chunks(pagine, max(1, chunk_size))
-    chunk_paths = []
-    if page_chunks:
-        log(f"  Rendering {len(page_chunks)} chunk(s) in parallel...", "info")
-        chunk_workers = max(1, chunk_workers)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=chunk_workers) as pool:
-            futures = []
-            for i, chunk in enumerate(page_chunks, start=1):
-                chunk_out = temp / f"chunk_{i:03d}.mp4"
-                futures.append(pool.submit(
-                    _render_pages_chunk,
-                    chunk,
-                    pages_dir,
-                    str(adir),
-                    str(chunk_out),
-                    use_blur,
-                    fps,
-                ))
-            for fut in futures:
-                chunk_paths.append(fut.result())
-
+    # Prepariamoci a creare i clip
     clips = []
+    fdir = temp / "f"
+    fdir.mkdir(parents=True, exist_ok=True)
 
+    # 1. INTRO
     if intro_text:
-        log("  Intro...", "info")
         ap = adir / "intro.mp3"
         if ap.exists():
-            d = audio_dur(str(ap))
-            intro_frame = fdir / "intro.png"
-            if not intro_frame.exists():
-                Image.fromarray(np.full((VIDEO_HEIGHT, VIDEO_WIDTH, 3), (8,8,12), dtype=np.uint8)).save(intro_frame)
-            clips.append(ImageClip(str(intro_frame)).with_duration(d).with_audio(AudioFileClip(str(ap))))
-            log(f"    {d:.1f}s", "success")
+            audio_clip = AudioFileClip(str(ap))
+            d = audio_clip.duration
+            
+            # Feature: prima 5 pagine in collage
+            intro_imgs = []
+            for p in pagine[:5]:
+                num = p["pagina"]
+                for pat in [f"page_{num:04d}.png", f"page_{num}.png", f"page{num:04d}.png"]:
+                    cp = pages_path / pat
+                    if cp.exists():
+                        intro_imgs.append(cp)
+                        break
+            
+            log(f"  Intro con collage di {len(intro_imgs)} pagine...", "info")
+            intro_frame = make_collage_frame(intro_imgs)
+            intro_frame_path = fdir / "intro_frame.png"
+            Image.fromarray(intro_frame).save(intro_frame_path)
+            intro_clip = ImageClip(str(intro_frame_path)).with_duration(d).with_audio(audio_clip)
+            intro_clip = intro_clip.transform(lambda gf, t, d=d: _zoom_frame(gf(t), t, d, end_scale=1.08))
+            clips.append(intro_clip)
 
-    for chunk_path in chunk_paths:
-        clips.append(VideoFileClip(str(chunk_path)))
+    # 2. PAGINE
+    log(f"  Assemblaggio {len(pagine)} pagine...", "info")
+    for pagina in pagine:
+        num = pagina["pagina"]
+        img_path = None
+        for pat in [f"page_{num:04d}.png", f"page_{num}.png", f"page{num:04d}.png"]:
+            candidate = pages_path / pat
+            if candidate.exists():
+                img_path = candidate
+                break
+        if not img_path: 
+            log(f"    Pagina {num} non trovata, salto", "warning")
+            continue
 
+        ap = adir / f"p{num}.mp3"
+        if not ap.exists(): 
+            log(f"    Audio p{num} non trovato, salto", "warning")
+            continue
+
+        try:
+            audio_clip = AudioFileClip(str(ap))
+            duration = float(audio_clip.duration or 0.1)
+            
+            # Salviamo il frame su disco per stabilità
+            frame_path = fdir / f"frame_{num:04d}.png"
+            make_page_frame_file(str(img_path), frame_path, use_blur=use_blur)
+            
+            # Creiamo il clip da file
+            page_clip = ImageClip(str(frame_path)).with_duration(duration).with_audio(audio_clip)
+            
+            # Trasformazione zoom con d=duration per evitare bug di closure
+            page_clip = page_clip.transform(lambda gf, t, d=duration: _zoom_frame(gf(t), t, d, end_scale=1.15))
+            clips.append(page_clip)
+        except Exception as e:
+            log(f"    Errore rendering pagina {num}: {e}", "error")
+
+    # 3. OUTRO
     if outro_text:
-        log("  Outro...", "info")
         ap = adir / "outro.mp3"
         if ap.exists():
-            d = audio_dur(str(ap))
-            outro_frame = fdir / "outro.png"
-            if not outro_frame.exists():
-                Image.fromarray(np.full((VIDEO_HEIGHT, VIDEO_WIDTH, 3), (8,8,12), dtype=np.uint8)).save(outro_frame)
-            clips.append(ImageClip(str(outro_frame)).with_duration(d).with_audio(AudioFileClip(str(ap))))
-            log(f"    {d:.1f}s", "success")
+            audio_clip = AudioFileClip(str(ap))
+            d = audio_clip.duration
+            
+            # Feature: ultima pagina come sfondo
+            last_img = None
+            if pagine:
+                num = pagine[-1]["pagina"]
+                for pat in [f"page_{num:04d}.png", f"page_{num}.png", f"page{num:04d}.png"]:
+                    cp = pages_path / pat
+                    if cp.exists():
+                        last_img = cp
+                        break
+            
+            if last_img:
+                log(f"  Outro con ultima pagina (#{num})...", "info")
+                outro_frame_path = fdir / "outro_frame.png"
+                make_page_frame_file(str(last_img), outro_frame_path, use_blur=use_blur)
+            else:
+                outro_frame_path = fdir / "outro_fallback.png"
+                Image.fromarray(np.full((VIDEO_HEIGHT, VIDEO_WIDTH, 3), (10,10,15), dtype=np.uint8)).save(outro_frame_path)
+                
+            outro_clip = ImageClip(str(outro_frame_path)).with_duration(d).with_audio(audio_clip)
+            outro_clip = outro_clip.transform(lambda gf, t, d=d: _zoom_frame(gf(t), t, d, end_scale=1.12))
+            clips.append(outro_clip)
 
     if not clips:
-        raise RuntimeError("Nessun clip")
+        raise RuntimeError("Nessun clip generato.")
 
-    log(f"Unione {len(clips)} clip...", "info")
+    log(f"Unione di {len(clips)} clip...", "info")
     final = concatenate_videoclips(clips, method="chain")
 
     out = Path(output_path)
@@ -362,8 +396,10 @@ def render_narration_video(json_path, pages_dir, output_path,
 
     log(f"Export: {final.duration:.1f}s ({final.duration/60:.1f} min)", "info")
 
+    # Usiamo un preset più lento per l'export finale per garantire qualità, 
+    # ma manteniamo threads per velocità.
     final.write_videofile(str(out), fps=fps, codec="libx264", audio_codec="aac",
-        bitrate="3000k", logger=None, preset="ultrafast", threads=4)
+        bitrate="4000k", logger=None, threads=4)
 
     for c in clips:
         try: c.close()
@@ -375,8 +411,9 @@ def render_narration_video(json_path, pages_dir, output_path,
         shutil.rmtree(temp, ignore_errors=True)
     except: pass
 
-    log(f"Fatto: {output_path}", "success")
+    log(f"Video creato: {output_path}", "success")
     return str(out)
+
 
 
 def get_narration_info(json_path):

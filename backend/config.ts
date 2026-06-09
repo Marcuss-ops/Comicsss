@@ -11,7 +11,7 @@ dotenv.config();
 export const CONFIG = {
   // Ollama (shared with Python)
   OLLAMA_URL: process.env.OLLAMA_URL || "http://localhost:11434",
-  OLLAMA_MODEL: process.env.OLLAMA_MODEL || "llava:13b",
+  OLLAMA_MODEL: process.env.OLLAMA_MODEL || "qwen2.5vl:7b",
   OLLAMA_TIMEOUT_SECONDS: parseInt(process.env.OLLAMA_TIMEOUT_SECONDS || "300", 10),
 
   // Bridge micro-service
@@ -22,7 +22,6 @@ export const CONFIG = {
   // Server
   NODE_ENV: process.env.NODE_ENV || "development",
   PORT: parseInt(process.env.PORT || "3000", 10),
-  DISABLE_HMR: process.env.DISABLE_HMR === "true",
 
   // Rate limiting
   RATE_WINDOW_MS: parseInt(process.env.RATE_WINDOW_MS || "60000", 10),

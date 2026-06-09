@@ -7,12 +7,15 @@ Entry point unificato per tutti i comandi Python del progetto.
 Comandi:
     python bin/cli.py analyze <pdf>         — Pipeline completo di analisi
     python bin/cli.py page <num> [pdf]      — Analizza una singola pagina
+    python bin/cli.py render <json> <dir>   — Renderizza JSON narrazione in video MP4
     python bin/cli.py bridge                — Avvia il micro-servizio OCR bridge
     python bin/cli.py test-ocr <page>       — Test approfondito OCR su una pagina
 
 Esempi:
-    python bin/cli.py analyze "fumetto.pdf" -o output -m llava:13b
+    python bin/cli.py analyze "fumetto.pdf" -o output -m qwen2.5vl:7b
     python bin/cli.py page 7 ./mio-fumetto.pdf
+    python bin/cli.py render narrazione.json pages/ -o video.mp4
+    python bin/cli.py render narrazione.json pages/ --voice it-IT-DiegoNeural
     python bin/cli.py bridge --port 8081
     python bin/cli.py test-ocr 7
 """
@@ -31,6 +34,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 
 from comic_video.commands import run_analyze, run_single_page, run_ocr_test
 from comic_video.bridge_server import run_bridge
+from comic_video.renderer import render_narration_video, get_narration_info
 from comic_video.config import (
     OLLAMA_MODEL,
     OLLAMA_TIMEOUT_SECONDS,
@@ -79,6 +83,7 @@ def cmd_analyze(
     global_analysis: bool = typer.Option(False, "--global-analysis", help="Aggiungi analisi globale della pagina"),
     full_global: bool = typer.Option(False, "--full-global", help="Analisi globale su TUTTE le pagine"),
     scene_json: bool = typer.Option(False, "--scene-json", help="Genera output scene JSON YouTube transcript"),
+    page_json: bool = typer.Option(True, "--page-json/--no-page-json", help="Genera output page-by-page nel formato finale"),
 ):
     """Pipeline completo: estrae pagine, rileva pannelli, analizza con LLM, sintetizza script."""
     try:
@@ -104,6 +109,7 @@ def cmd_analyze(
             global_analysis=global_analysis,
             full_global=full_global,
             scene_json=scene_json,
+            page_json=page_json,
         )
     except (FileNotFoundError, RuntimeError) as e:
         typer.echo(f"Error: {e}", err=True)
@@ -150,6 +156,71 @@ def cmd_test_ocr(
     try:
         run_ocr_test(page_num=page)
     except (FileNotFoundError, RuntimeError) as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command(name="render")
+def cmd_render(
+    json_file: str = typer.Argument(..., help="Path al file JSON di narrazione"),
+    pages_dir: str = typer.Argument(..., help="Directory con le immagini delle pagine"),
+    output: str = typer.Option("output/video.mp4", "-o", "--output", help="Path video di output"),
+    voice: str = typer.Option("it-IT-DiegoNeural", "--voice", help="Voce edge-tts (it-IT-DiegoNeural, it-IT-ElsaNeural)"),
+    voice_rate: str = typer.Option("-30%", "--rate", help="Velocita voce (es. -30% = piu' lento)"),
+    voice_pitch: str = typer.Option("-8Hz", "--pitch", help="Tono voce (es. -8Hz = piu' grave)"),
+    fps: int = typer.Option(24, "--fps", help="Frame per second"),
+    transition: float = typer.Option(0.8, "--transition", help="Durata transizione tra pagine (sec)"),
+    no_subtitles: bool = typer.Option(False, "--no-subtitles", help="Disabilita sottotitoli"),
+    tts_workers: int = typer.Option(3, "--tts-workers", help="Numero di TTS in parallelo"),
+    chunk_size: int = typer.Option(3, "--chunk-size", help="Numero di pagine per chunk renderizzato in parallelo"),
+    chunk_workers: int = typer.Option(2, "--chunk-workers", help="Numero di chunk renderizzati in parallelo"),
+    fast_render: bool = typer.Option(False, "--fast-render", help="Riduce la qualità per velocizzare il render"),
+    no_blur: bool = typer.Option(False, "--no-blur", help="Disabilita il background blur per velocizzare il render"),
+    pages: Optional[str] = typer.Option(None, "--pages", help="Range pagine (es. 1-10)"),
+    intro: Optional[str] = typer.Option(None, "--intro", help="Testo intro da leggere all'inizio"),
+    outro: Optional[str] = typer.Option(None, "--outro", help="Testo outro da leggere alla fine"),
+    info_only: bool = typer.Option(False, "--info", help="Mostra solo info sul JSON senza renderizzare"),
+):
+    """Renderizza un JSON di narrazione in video MP4 con voiceover.
+    
+    Esempio:
+        python bin/cli.py render narrazione.json pages/ -o video.mp4
+        python bin/cli.py render narrazione.json pages/ --voice it-IT-DiegoNeural
+        python bin/cli.py render narrazione.json pages/ --info
+    """
+    try:
+        # Mostra info se richiesto
+        if info_only:
+            info = get_narration_info(json_file)
+            typer.echo(f"\nTitolo: {info['titolo']}")
+            typer.echo(f"Pagine: {info['num_pagine']}")
+            typer.echo(f"Pagine elenco: {info['pagine']}")
+            typer.echo(f"Totale parole: {info['totale_parole']}")
+            typer.echo(f"Durata stimata: {info['durata_stimata_minuti']} min ({info['durata_stimata_secondi']} sec)")
+            raise typer.Exit()
+        
+        # Renderizza
+        render_fps = 15 if fast_render else fps
+        render_transition = 0.0 if fast_render else transition
+        render_narration_video(
+            json_path=json_file,
+            pages_dir=pages_dir,
+            output_path=output,
+            voice=voice,
+            voice_rate=voice_rate,
+            voice_pitch=voice_pitch,
+            fps=render_fps,
+            transition_duration=render_transition,
+            with_subtitles=not no_subtitles,
+            page_range=pages,
+            intro_text=intro,
+            outro_text=outro,
+            tts_workers=tts_workers,
+            use_blur=not no_blur,
+            chunk_size=chunk_size,
+            chunk_workers=chunk_workers,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
 

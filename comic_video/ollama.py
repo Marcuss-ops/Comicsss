@@ -236,6 +236,15 @@ _PROMPT_LEAKAGE_PATTERNS = [
     r"NON INVENTARE personaggi",
     r"Non usare:\s*atmosfera",
     r"Includi i dialoghi nella narrazione",
+    r"Di seguito il testo ESTRATTO.*?dialoghi\.",
+    r"Analizza SOLO QUESTA singola vignetta\.?",
+    r"AMBIENTAZIONE:\s*Dove siamo\?.*",
+    r"PERSONAGGI:\s*Chi vedi realmente\?.*",
+    r"AZIONI:\s*Cosa succede nella scena\?.*",
+    r"DIALOGHI:\s*Usa il TESTO OCR qui sopra.*",
+    r"Se l'OCR ha estratto testo, QUELLO è il dialogo.*",
+    r"Non inventare dialoghi\.?",
+    r"tensione, palpabile, caos, follia, psicologico\.?",
 ]
 
 _PLACEHOLDER_EXACT = {
@@ -283,6 +292,8 @@ def _sanitize_llm_field(value: str, field_name: str = "") -> str:
             continue
         # Skip lines that are exactly the field example from the prompt JSON schema
         if re.match(r'^(descrizione|titolo|personaggi|ambientazione|dialoghi|effetto_sonoro|durata_stimata)\s*[:=]\s*"', line_stripped, re.IGNORECASE):
+            continue
+        if "Analizza SOLO QUESTA singola vignetta" in line_stripped:
             continue
         filtered_lines.append(line)
     cleaned = "\n".join(filtered_lines)
@@ -374,7 +385,7 @@ def parse_json_response(text: str, page_num: int) -> dict:
             "page_num": page_num,
             "tipo_pagina": "fumetto",
             "titolo_scena": f"Pagina {page_num}",
-            "descrizione_narrativa": raw[:500] or "(Nessuna descrizione)",
+            "descrizione_narrativa": "(Analisi non valida del modello)",
             "personaggi": "",
             "dialoghi": "",
             "effetto_sonoro": "",
@@ -386,7 +397,7 @@ def parse_json_response(text: str, page_num: int) -> dict:
     defaults = {
         "tipo_pagina": "fumetto",
         "titolo_scena": f"Pagina {page_num}",
-        "descrizione_narrativa": raw[:500],
+        "descrizione_narrativa": "(Analisi non valida del modello)",
         "personaggi": "",
         "dialoghi": "",
         "effetto_sonoro": "",

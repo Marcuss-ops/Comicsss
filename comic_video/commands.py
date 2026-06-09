@@ -20,7 +20,14 @@ from .utils import (
     find_pdf,
 )
 from .extractor import extract_pdf_pages, EASYOCR_AVAILABLE
-from .analyzer import analyze_page_panels, analyze_full_page, synthesize_script, synthesize_scene_json
+from .analyzer import (
+    analyze_page_panels,
+    analyze_full_page,
+    synthesize_script,
+    synthesize_scene_json,
+    synthesize_page_digest_json,
+    build_page_digest_fallback,
+)
 from .panel_detector import detect_panels, save_panels_debug
 from .balloon_detector import detect_balloons, detect_balloons_in_panel
 from .ollama import DEFAULT_OLLAMA_URL
@@ -75,9 +82,11 @@ def _save_output(
     synthesis: dict,
     output_dir: str,
     pdf_name: str,
+    model_name: str = "qwen2.5vl:7b",
     page_panels_map: dict[int, int] = None,
     global_analyses: list[dict] = None,
     scene_script: list[dict] = None,
+    page_digest: dict = None,
 ):
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -85,7 +94,7 @@ def _save_output(
 
     full_data = {
         "fonte": pdf_name,
-        "modello": "llava:13b + panel detection",
+        "modello": f"{model_name} + panel detection",
         "riepilogo_pagine": page_panels_map or {},
         "analisi_pannelli": panel_analyses,
         "script_video": synthesis,
@@ -111,6 +120,13 @@ def _save_output(
         with open(scene_path, "w", encoding="utf-8") as f:
             json.dump(scene_output, f, ensure_ascii=False, indent=2)
         log(f"Saved scene transcript: {scene_path}", "success")
+
+    if page_digest:
+        full_data["page_digest"] = page_digest
+        page_path = out_path / f"{base_name}_page_digest.json"
+        with open(page_path, "w", encoding="utf-8") as f:
+            json.dump(page_digest, f, ensure_ascii=False, indent=2)
+        log(f"Saved page digest: {page_path}", "success")
 
     json_path = out_path / f"{base_name}_analisi_v4.json"
     with open(json_path, "w", encoding="utf-8") as f:
@@ -217,6 +233,7 @@ def run_analyze(
     global_analysis: bool = False,
     full_global: bool = False,
     scene_json: bool = False,
+    page_json: bool = True,
 ) -> None:
     """Pipeline completo: estrae pagine, rileva pannelli, analizza con LLM, sintetizza script."""
     pdf_path = Path(pdf)
@@ -354,10 +371,6 @@ def run_analyze(
             eta_str = "?"
         log(f"  [{pages_done}/{num_pages} | {elapsed:.0f}s elapsed | ETA: {eta_str}] Page {page_num}...", "info")
 
-        if timeout > 0 and elapsed > timeout:
-            log(f"  GLOBAL TIMEOUT ({timeout}s) reached after page {page_num}. Stopping.", "warning")
-            break
-
         panels = _detect_page_panels(page_image, page_num, no_panel_detect)
         page_panels_map[page_num] = len(panels)
         total_panels_detected += len(panels)
@@ -415,8 +428,11 @@ def run_analyze(
         pages_dir = Path(output) / "pages"
         if pages_dir.exists():
             import shutil
-            shutil.rmtree(pages_dir)
-            log("Removed page images (--no-cache)", "info")
+            try:
+                shutil.rmtree(pages_dir)
+                log("Removed page images (--no-cache)", "info")
+            except Exception as e:
+                log(f"Could not fully remove page images (--no-cache): {e}", "warning")
 
     elapsed_step2 = time.time() - start_time
     log(f"Step 2 complete: {total_panels_detected} panels detected, {total_panels_analyzed} analyzed in {elapsed_step2:.0f}s", "success")
@@ -484,8 +500,31 @@ def run_analyze(
         except Exception as e:
             log(f"  Scene synthesis error: {e}", "error")
 
-    _save_output(all_panel_analyses, synthesis, output, str(pdf_path), page_panels_map,
-                global_analyses=global_analyses, scene_script=scene_script)
+    page_digest = None
+    if page_json:
+        log("Step 4b/4: Creating page-by-page digest JSON...", "header")
+        try:
+            page_digest = synthesize_page_digest_json(
+                model=model,
+                panel_analyses=all_panel_analyses,
+                page_analyses=global_analyses if global_analyses else None,
+                ollama_url=ollama_url,
+                timeout=timeout,
+                comic_title=comic_title,
+                total_pages=total_pdf_pages,
+            )
+        except Exception as e:
+            log(f"  Page digest synthesis error: {e}", "error")
+            page_digest = build_page_digest_fallback(
+                panel_analyses=all_panel_analyses,
+                page_analyses=global_analyses if global_analyses else None,
+                comic_title=comic_title,
+                total_pages=total_pdf_pages,
+            )
+
+    _save_output(all_panel_analyses, synthesis, output, str(pdf_path), model,
+                page_panels_map,
+                global_analyses=global_analyses, scene_script=scene_script, page_digest=page_digest)
     elapsed = time.time() - start_time
     _print_summary(all_panel_analyses, synthesis, page_panels_map, elapsed, total_panels_analyzed)
     if scene_script:

@@ -13,7 +13,7 @@
 "atmosfera": "minacciosa, teatrale, disturbante",
 "cosa_succede": "La prima immagine è dominata dal volto del Joker. Non è una semplice presentazione del personaggio. È quasi un'aggressione diretta al lettore. Il Joker impugna una macchina fotografica e sorride come se stesse per catturare qualcosa che non dovrebbe essere visto. L'inquadratura mette subito al centro il tema dello sguardo, dell'umiliazione e dello spettacolo crudele.",
 "narrazione_video": "La storia si apre con il Joker che guarda dritto verso di noi. Ha una macchina fotografica in mano, ma quella macchina non sembra fatta per conservare ricordi felici. Sembra uno strumento di minaccia. Il suo sorriso non promette divertimento. Promette dolore trasformato in spettacolo.",
-"funzione_narrativa": "Anticipa il tono della storie e prepara il lettore a un racconto dove la follia non sarà solo violenza fisica, ma anche controllo psicologico."
+"funzione_narrativa": "Anticipa il tono della storia e prepara il lettore a un racconto dove la follia non sarà solo violenza fisica, ma anche controllo psicologico."
 },
 {
 "pagina": 2,
@@ -37,7 +37,7 @@
 },
 {
 "pagina": 4,
-"tipo": "inizio della storia",
+"tipo": "inizio della story",
 "personaggi_principali": [
 "Batman",
 "Commissario Gordon",
@@ -102,19 +102,6 @@
 "cosa_succede": "Batman smaschera il detenuto e scopre che non è il vero Joker. Il criminale è già fuggito, lasciando dietro di sé un inganno. La tensione cambia immediatamente: non si tratta più di parlare. Ora bisogna capire dove sia il Joker e cosa stia preparando.",
 "narrazione_video": "Batman afferra l'uomo, lo guarda meglio, e la verità esplode davanti a tutti: quello non è il Joker. Il vero Joker è fuori. Libero. Invisibile. E quando il Joker sparisce, significa solo una cosa: da qualche parte, qualcuno sta già per diventare parte del suo spettacolo.",
 "funzione_narrativa": "Dà inizio alla caccia e trasforma la scena da confronto psicologico a emergenza."
-},
-{
-"pagina": 9,
-"tipo": "apparizione del Joker",
-"personaggi_principali": [
-"Joker",
-"proprietario del luna park"
-],
-"luogo": "luna park abbandonato",
-"atmosfera": "grottesca, decadente, minacciosa",
-"cosa_succede": "Il Joker appare in un vecchio luna park. Sta trattando l'acquisto del posto con il proprietario. Il parco è vecchio, sporco e inquietante, ma per il Joker sembra perfetto. Non lo vede come una rovina: lo vede come un palcoscenico.",
-"narrazione_video": "Mentre Batman scopre l'evasione, il Joker è già altrove. E il posto che ha scelto dice tutto di lui: un luna park abbandonato, pieno di attrazioni morte, sorrisi finti e ricordi marci. Per chiunque altro sarebbe una rovina. Per il Joker, è teatro puro.",
-"funzione_narrativa": "Introduce il luogo principale del piano del Joker e mostra che la sua fuga ha già uno scopo preciso."
 },
 {
 "pagina": 10,

@@ -1,0 +1,28 @@
+{
+"titolo_video": "Batman The Killing Joke TEST",
+"stile": "oscuro, cinematografico",
+"intro_forte": "Certe storie non cominciano con un'esplosione. Cominciano con un sorriso.",
+"pagine": [
+{
+"pagina": 1,
+"tipo": "copertina",
+"personaggi_principali": ["Joker"],
+"luogo": "immagine simbolica",
+"atmosfera": "minacciosa",
+"cosa_succede": "La prima immagine è dominata dal volto del Joker.",
+"narrazione_video": "La storia si apre con il Joker che guarda dritto verso di noi.",
+"funzione_narrativa": "Anticipa il tono della storia."
+},
+{
+"pagina": 2,
+"tipo": "crediti",
+"personaggi_principali": [],
+"luogo": "pagina grafica astratta",
+"atmosfera": "silenziosa",
+"cosa_succede": "La pagina presenta il titolo e i nomi degli autori.",
+"narrazione_video": "Prima ancora che Batman entri in scena, il libro ci mette davanti a un'immagine semplice ma inquietante.",
+"funzione_narrativa": "Introduce visivamente il tema del ciclo."
+}
+],
+"finale_forte_prime_10_pagine": "Fine del test."
+}
